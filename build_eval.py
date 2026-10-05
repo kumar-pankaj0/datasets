@@ -3,7 +3,7 @@ import collections
 import random
 
 # 1. Load the 50 hard eval samples and sanitize invalid LLM scores
-with open('eval_test_set.json', 'r') as f:
+with open('data_eval_raw.json', 'r') as f:
     eval_data = json.load(f)
 
 valid_scores = {1, 3, 5, 7, 9}
@@ -21,12 +21,12 @@ for item in eval_data:
         item['expected_output'][m] = snap_score(item['expected_output'][m])
 
 # 2. Prevent Data Leakage! Get all training data raw_asr to exclude them
-with open('incremental_replay_dataset.json', 'r') as f:
+with open('data_train.json', 'r') as f:
     train_data = json.load(f)
 train_texts = {item['input']['raw_asr'] for item in train_data}
 
 # 3. Load master pool and filter out training data
-with open('dataset.json', 'r') as f:
+with open('data_baseline.json', 'r') as f:
     master_data = json.load(f)
 
 # The master data uses {"output": ...} instead of {"expected_output": ...}
@@ -98,5 +98,5 @@ for m in metrics:
     row = [f"{final_counts[m][s]}" for s in scores]
     print(f"{m:<15} | 1: {row[0]:<4} | 3: {row[1]:<4} | 5: {row[2]:<4} | 7: {row[3]:<4} | 9: {row[4]:<4}")
 
-with open('robust_eval_set.json', 'w') as f:
+with open('data_eval.json', 'w') as f:
     json.dump(final_eval_set, f, indent=2)

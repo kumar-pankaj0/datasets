@@ -3,11 +3,11 @@ import random
 import collections
 
 # Load the original 2,917 samples
-with open("dataset.json", "r") as f:
+with open("data_baseline.json", "r") as f:
     original_data = json.load(f)
 
 # Load the curated hard-negatives
-with open("second_face_dataset.json", "r") as f:
+with open("second_face_data_baseline.json", "r") as f:
     new_data = json.load(f)
 
 # Step 1: Count what already exists in the hard-negatives
@@ -18,7 +18,7 @@ for sample in new_data:
     for m in metrics:
         existing_counts[m][sample["output"][m]] += 1
 
-print("=== Existing counts in second_face_dataset.json ===")
+print("=== Existing counts in second_face_data_baseline.json ===")
 for m in metrics:
     print(f"  {m}: {dict(sorted(existing_counts[m].items()))}")
 
@@ -84,7 +84,7 @@ for sample in incremental_dataset:
     for m in metrics:
         final_counts[m][sample["output"][m]] += 1
 
-print(f"\n=== FINAL incremental_replay_dataset.json ({len(incremental_dataset)} samples) ===")
+print(f"\n=== FINAL incremental_replay_data_baseline.json ({len(incremental_dataset)} samples) ===")
 total = len(incremental_dataset)
 print(f"{'Metric':<16} | {'1':<12} | {'3':<12} | {'5':<12} | {'7':<12} | {'9':<12}")
 print("-" * 82)
@@ -93,7 +93,7 @@ for m in metrics:
     print(f"{m:<16} | " + " | ".join(row))
 
 # Save
-with open("incremental_replay_dataset.json", "w") as f:
+with open("incremental_replay_data_baseline.json", "w") as f:
     json.dump(incremental_dataset, f, indent=2)
 
-print(f"\nSaved incremental_replay_dataset.json with {len(incremental_dataset)} samples.")
+print(f"\nSaved incremental_replay_data_baseline.json with {len(incremental_dataset)} samples.")
