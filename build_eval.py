@@ -21,7 +21,7 @@ for item in eval_data:
         item['expected_output'][m] = snap_score(item['expected_output'][m])
 
 # 2. Prevent Data Leakage! Get all training data raw_asr to exclude them
-with open('data_train.json', 'r') as f:
+with open('data_phase2_train.json', 'r') as f:
     train_data = json.load(f)
 train_texts = {item['input']['raw_asr'] for item in train_data}
 
