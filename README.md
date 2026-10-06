@@ -23,3 +23,10 @@ This repository contains datasets and scripts used to train and evaluate a metri
 * **`build_train.py`**: Generates `data_phase2_train.json` by calculating score deficits and pulling needed baseline samples.
 * **`build_eval.py`**: Generates the leakage-free `data_eval.json` test set.
 * **`verify.py`**: Asserts schema integrity and perfectly orthogonal metric correlation (Pearson |r|).
+
+## Mathematical Signal Auditing (`verify.py`)
+To mathematically guarantee that our datasets contain high-quality signal and no lazy shortcuts, we run strict statistical audits on the labels. The `verify.py` script checks three things:
+
+1. **Variance (Spreadness):** We want a high variance (e.g., > 7.5). If variance is near 0, the dataset is stuck on the "happy path" and lacks hard edge cases. High variance forces the gradient optimizer to do real work.
+2. **Shannon Entropy (Distribution):** We want entropy near its mathematical maximum (~2.32 bits for 5 classes). This proves our dataset has a perfectly uniform distribution and is not flooded with biased scores (e.g., too many `9`s).
+3. **Pearson Correlation (Independence):** We want all cross-metric correlations to be near zero ($|r| \approx 0$). This proves the metrics are orthogonal, meaning the neural network cannot cheat by using one metric (like formatting) to guess the score of another metric (like grammar).
