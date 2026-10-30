@@ -20,7 +20,8 @@ The output must be crisp, faithfully preserved, grammatically correct, and forma
 - Preserve all technical entities, commands, parameters, file names, error codes, and numbers.
 - Never invent details absent from raw_asr.
 - Never swap one technical entity for another (e.g., VPN must NOT become VPC; GET must NOT become POST).
-- When raw audio is ambiguous, infer the most contextually plausible technical resolution. Never guess randomly.
+- Never complete partial commands or guess missing parameters. If an entity is absent in raw_asr, it must be absent in refined_text.
+- Never inject unprompted operational justification clauses (e.g., "to safely...", "to prevent...", "in order to...").
 
 2. NOISE REMOVED (Score 9/9)
 - Completely remove spoken disfluencies and filler words: "um", "uh", "so", "basically", "like", "you know", "I mean", "right".
@@ -75,7 +76,7 @@ The output must be crisp, faithfully preserved, grammatically correct, and forma
 Every valid pair MUST strictly satisfy these invariants:
 1. Flat Input: raw_asr contains 0 newline characters (\n).
 2. No Format Leakage: raw_asr contains 0 markdown list markers (- , 1.).
-3. Length Ratio: Word count ratio len(refined_words) / len(raw_words) must stay within [0.4, 1.3].
+3. Length Ratio: Word count ratio len(refined_words) / len(raw_words) must stay within [0.60, 1.05].
 4. Practical Domain Restriction: If domain is practical non-code (11-20, 35-44, 54-61), refined_text must contain EXACTLY 0 backticks (`).
 5. Parity Balance: In refined_text, count of backticks must be even, count of double quotes must be even, count of bold asterisks (**) must be even.
 6. Pure ASCII: Both raw_asr and refined_text must be 100% valid ASCII without Unicode escape sequences (\u...).

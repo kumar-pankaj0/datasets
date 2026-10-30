@@ -1,0 +1,242 @@
+import json
+import re
+import sys
+import os
+from pathlib import Path
+
+# Add code directory to path
+sys.path.insert(0, os.path.abspath("code"))
+
+from validator import validate_pair, validate_batch, count_active_noise_layers, get_noise_layer_count
+from cleaner import clean_sample
+
+# Load eval set for leakage check
+eval_file = Path("sft_eval.json")
+if eval_file.exists():
+    with open(eval_file, "r", encoding="utf-8") as f:
+        eval_data = json.load(f)
+    eval_raws = {e["raw_asr"].strip().lower() for e in eval_data}
+    eval_refs = {e["refined_text"].strip() for e in eval_data}
+else:
+    eval_raws = set()
+    eval_refs = set()
+
+# Domain 4: Incident Management & Live RCA Narration
+# Wave 33 Batch 200: 4 Short (<25 words), 6 Medium (25-89 words), 10 Long (90+ words)
+
+samples = [
+    # =========================================================================
+    # Tier 1: Short Utterances (< 25 words) - Exactly 4 samples (Samples 1-4)
+    # Exactly 1 complete sentence, 0 newlines, max 1 cut-word.
+    # Content words >= 6-8. Active gerund ("by <action>"). Zero backticks.
+    # Underscore identifiers, NO dotted filenames.
+    # At least 3 noise layers active (target 5-6).
+    # =========================================================================
+
+    # Sample 1: ZooKeeper leader election tick time
+    {
+        "raw_asr": "basically calibrat r p c sync throttling buy tuning tick underscore time on follower knowed daemons instead",
+        "refined_text": "Calibrate RPC sync throttling by tuning tick_time on follower node daemons instead."
+    },
+
+    # Sample 2: Memcached slab rebalancing memory pressure
+    {
+        "raw_asr": "um deduplicat c p u memory allocation buffers buy adjusting slab underscore growth on cache knowed instances instead",
+        "refined_text": "Deduplicate CPU memory allocation buffers by adjusting slab_growth on cache node instances instead."
+    },
+
+    # Sample 3: HAProxy backend health check timeout flap
+    {
+        "raw_asr": "so basically configur cube let routing health checks buy tuning check underscore timeout on proxy knowed daemons instead",
+        "refined_text": "Configure kubelet routing health checks by tuning check_timeout on proxy node daemons instead."
+    },
+
+    # Sample 4: CockroachDB range lease transfers
+    {
+        "raw_asr": "uh initializ post gres range lease transfers buy tuning lease underscore transfer on database knowed hosts instead",
+        "refined_text": "Initialize Postgres range lease transfers by tuning lease_transfer on database node hosts instead."
+    },
+
+    # =========================================================================
+    # Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples (Samples 5-10)
+    # 1 to 3 grammatically complete sentences. Natural \n\n breaks. Max \n\n: words // 25.
+    # Zero backticks. Zero purpose patterns. At least 4 noise layers active (target 6).
+    # =========================================================================
+
+    # Sample 5: ScyllaDB coordinator read timeout under compaction
+    {
+        "raw_asr": "um our scylla cluster suffered coordinator read timeouts when twelve knowed replicas delayed r p c queries across sixteen seconds wait thirty two seconds instead basically incident responders restored cluster communicat buy adjusting compaction underscore throughput buy passing dash dash compaction throughput into database configur manifests while systems engineers right two r p c read latency probes",
+        "refined_text": "Our Scylla cluster suffered coordinator read timeouts when 12 node replicas delayed RPC queries across 32 seconds instead.\n\nIncident responders restored cluster communication by adjusting compaction_throughput by passing --compaction-throughput into database configuration manifests while systems engineers write 2 RPC read latency probes."
+    },
+
+    # Sample 6: MinIO S3 object locking metadata deadlocks
+    {
+        "raw_asr": "basically our object storage tier encountered s three api upload stalls when fourteen knowed storage targets delayed r p c requests across twenty seconds wait forty seconds instead um storage operators restored daemon operat buy tuning lock underscore timeout buy passing dash dash max storage locks into cube let configur settings while platform engineers right two cube let lock monitors",
+        "refined_text": "Our object storage tier encountered S3 API upload stalls when 14 node storage targets delayed RPC requests across 40 seconds instead.\n\nStorage operators restored daemon operations by tuning lock_timeout by passing --max-storage-locks into kubelet configuration settings while platform engineers write 2 kubelet lock monitors."
+    },
+
+    # Sample 7: BGP EVPN route reflector memory exhaustion
+    {
+        "raw_asr": "um our spine routing tier dropped tenant network routes when sixteen knowed fabric switches rejected bgp update messages across eighteen seconds wait thirty six seconds instead basically network operators restored routing communicat buy tuning keepalive underscore timer buy passing dash dash bgp keepalive into switch configur manifests while infrastructure engineers right two wi re shark route flap probes",
+        "refined_text": "Our spine routing tier dropped tenant network routes when 16 node fabric switches rejected BGP update messages across 36 seconds instead.\n\nNetwork operators restored routing communication by tuning keepalive_timer by passing --bgp-keepalive into switch configuration manifests while infrastructure engineers write 2 Wireshark route flap probes."
+    },
+
+    # Sample 8: Chrony NTP synchronization drift
+    {
+        "raw_asr": "basically our time synchronization cluster dropped distributed clock locks when ten knowed ntp daemons drifted across twelve seconds wait twenty four seconds instead um site reliability engineers restored daemon synchronizat buy tuning poll underscore interval buy passing dash dash max poll interval into cube let configur manifests while platform administrators right two cube let clock drift probes",
+        "refined_text": "Our time synchronization cluster dropped distributed clock locks when 10 node daemons drifted across 24 seconds instead.\n\nSite reliability engineers restored daemon synchronization by tuning poll_interval by passing --max-poll-interval into kubelet configuration manifests while platform administrators write 2 kubelet clock drift probes."
+    },
+
+    # Sample 9: Ceph BlueStore OSD metadata spillover
+    {
+        "raw_asr": "um our block storage cluster halted volume writes when eighteen knowed osd daemons spilled rocksdb metadata across twenty seconds wait forty five seconds instead basically storage administrators restored storage allocat buy tuning spillover underscore threshold buy passing dash dash bluestore min alloc size into post gres configur manifests while systems engineers right two post gres storage monitors",
+        "refined_text": "Our block storage cluster halted volume writes when 18 node OSD daemons spilled RocksDB metadata across 45 seconds instead.\n\nStorage administrators restored storage allocation by tuning spillover_threshold by passing --bluestore-min-alloc-size into Postgres configuration manifests while systems engineers write 2 Postgres storage monitors."
+    },
+
+    # Sample 10: Envoy service mesh circuit breaker tripping
+    {
+        "raw_asr": "basically our service mesh ingress proxies dropped inbound microservice traffic when twenty knowed envoy gateways tripped circuit breakers across fifteen seconds wait thirty seconds instead um platform reliability engineers restored gateway operat buy tuning connection underscore pool buy passing dash dash max pending requests into cube ctl configur manifests while reliability engineers right two cube ctl circuit probes",
+        "refined_text": "Our service mesh ingress proxies dropped inbound microservice traffic when 20 node Envoy gateways tripped circuit breakers across 30 seconds instead.\n\nPlatform reliability engineers restored gateway operations by tuning connection_pool by passing --max-pending-requests into kubectl configuration manifests while reliability engineers write 2 kubectl circuit probes."
+    },
+
+    # =========================================================================
+    # Tier 3: Long Utterances (90+ words) - Exactly 10 samples (Samples 11-20)
+    # Multi-paragraph structure separated by \n\n. Zero numbered checklist stereotypes.
+    # Spoken engineer narration. Zero backticks. Zero purpose patterns.
+    # At least 4 noise layers active (target 6 layers active).
+    # =========================================================================
+
+    # Sample 11: Apache Pulsar bookie ledger write quorum degradation
+    {
+        "raw_asr": "basically during heavy stream ingestion our distributed pulsar messaging cluster encountered topic publish stalls when journal disk saturation forced read only bookie states across twelve knowed brokers wait eighteen brokers instead um concurrent ledger quorum stalls throttled message transport buy driving bookie c p u utiliz to ninety two percent across twenty four cluster nodes p ninety five message write latency jumped from four milliseconds up through two two zero zero milliseconds buy stalling thirty five percent of telemetry r p c requests incident responders isolated the primary trigger inside pulsar underscore bookie dot conf buy reviewing ledger fencing logs across slash var slash log platform reliability engineers restored broker synchronizat buy adjusting journal underscore flush buy passing dash dash journal sync interval into broker configur settings while systems administrators right two r p c delivery latency monitors",
+        "refined_text": "During heavy stream ingestion, our distributed Pulsar messaging cluster encountered topic publish stalls when journal disk saturation forced read-only bookie states across 18 node brokers instead. Concurrent ledger quorum stalls throttled message transport by driving bookie CPU utilization to 92 percent across 24 cluster nodes.\n\nP95 message write latency jumped from 4 milliseconds up through 2200 milliseconds by stalling 35 percent of telemetry RPC requests. Incident responders isolated the primary trigger inside pulsar_bookie.conf by reviewing ledger fencing logs across /var/log.\n\nPlatform reliability engineers restored broker synchronization by adjusting journal_flush by passing --journal-sync-interval into broker configuration settings while systems administrators write 2 RPC delivery latency monitors."
+    },
+
+    # Sample 12: etcd Raft log compaction failure
+    {
+        "raw_asr": "um during large scale cluster deployments our etcd metadata cluster encountered leader election churn when compact log failures exceeded backend database quotas across fourteen knowed members wait twenty members instead basically uncompacted revisions locked disk write transactions buy driving member c p u utiliz to ninety three percent across thirty control instances p ninety nine commit latency spiked from five milliseconds up through two six zero zero milliseconds buy failing forty percent of cluster state r p c updates incident responders isolated the underlying defect inside etcd underscore server dot yml buy evaluating quota alarm metrics across slash var slash log systems reliability engineers restored member operat buy tuning auto underscore compaction buy passing dash dash auto compaction retention into etcd configur manifests while site reliability engineers right two cube ctl raft quorum monitors",
+        "refined_text": "During large scale cluster deployments, our etcd metadata cluster encountered leader election churn when compact log failures exceeded backend database quotas across 20 node members instead. Uncompacted revisions locked disk write transactions by driving member CPU utilization to 93 percent across 30 control instances.\n\nP99 commit latency spiked from 5 milliseconds up through 2600 milliseconds by failing 40 percent of cluster state RPC updates. Incident responders isolated the underlying defect inside etcd_server.yml by evaluating quota alarm metrics across /var/log.\n\nSystems reliability engineers restored member operations by tuning auto_compaction by passing --auto-compaction-retention into etcd configuration manifests while site reliability engineers write 2 kubectl Raft quorum monitors."
+    },
+
+    # Sample 13: Redis Cluster gossip protocol packet storms
+    {
+        "raw_asr": "basically during inter datacenter routing migrations our redis cluster tier suffered node isolation events when jumbo frame packet drops corrupted gossip communication across sixteen knowed cluster nodes wait twenty two cluster nodes instead um dropped heartbeat packets triggered spurious cluster topology rebalances buy driving node c p u utiliz to ninety one percent across twenty eight database instances p ninety five cluster ping latency climbed from six milliseconds up through two four zero zero milliseconds buy rejecting twenty percent of shard migration r p c commands incident responders isolated the primary trigger inside redis underscore gossip dot conf buy inspecting cluster link status traces across slash var slash log database platform engineers restored cluster communicat buy adjusting cluster underscore timeout buy passing dash dash cluster node timeout into redis configur manifests while reliability engineers right two wi re shark gossip packet probes",
+        "refined_text": "During inter datacenter routing migrations, our Redis cluster tier suffered node isolation events when jumbo frame packet drops corrupted gossip communication across 22 node cluster nodes instead. Dropped heartbeat packets triggered spurious cluster topology rebalances by driving node CPU utilization to 91 percent across 28 database instances.\n\nP95 cluster ping latency climbed from 6 milliseconds up through 2400 milliseconds by rejecting 20 percent of shard migration RPC commands. Incident responders isolated the primary trigger inside redis_gossip.conf by inspecting cluster link status traces across /var/log.\n\nDatabase platform engineers restored cluster communication by adjusting cluster_timeout by passing --cluster-node-timeout into Redis configuration manifests while reliability engineers write 2 Wireshark gossip packet probes."
+    },
+
+    # Sample 14: Prometheus TSDB head chunk compaction locks
+    {
+        "raw_asr": "um during cluster horizontal pod autoscaling spikes our prometheus monitoring tier dropped scrape samples when in memory head chunk compaction locked block writing across twelve knowed scraper pods wait eighteen scraper pods instead basically concurrent memory chunk flushes blocked incoming sample ingestion buy driving scraper c p u utiliz to ninety four percent across twenty four monitoring instances p ninety nine ingestion delay surged from three milliseconds up through two five zero zero milliseconds buy failing thirty percent of incoming metric r p c points incident responders diagnosed the primary trigger inside prometheus underscore storage dot yml buy tracking disk lock metrics across slash var slash log telemetry reliability engineers stabilized head chunk allocat buy tuning head underscore chunks buy passing dash dash storage tsdb max block duration into prometheus configur settings while systems administrators right two cube let scraper lag probes",
+        "refined_text": "During cluster horizontal pod autoscaling spikes, our Prometheus monitoring tier dropped scrape samples when in-memory head chunk compaction locked block writing across 18 node scraper pods instead. Concurrent memory chunk flushes blocked incoming sample ingestion by driving scraper CPU utilization to 94 percent across 24 monitoring instances.\n\nP99 ingestion delay surged from 3 milliseconds up through 2500 milliseconds by failing 30 percent of incoming metric RPC points. Incident responders diagnosed the primary trigger inside prometheus_storage.yml by tracking disk lock metrics across /var/log.\n\nTelemetry reliability engineers stabilized head chunk allocation by tuning head_chunks by passing --storage-tsdb-max-block-duration into Prometheus configuration settings while systems administrators write 2 kubelet scraper lag probes."
+    },
+
+    # Sample 15: NGINX upstream keepalive connection pool exhaustion
+    {
+        "raw_asr": "basically during flash sale web traffic our edge reverse proxies returned bad gateway responses when upstream keepalive connection pools reached backend limits across ten knowed gateway proxies wait sixteen gateway proxies instead um depleted connection pools forced continuous tcp socket recreation buy driving gateway c p u utiliz to ninety three percent across thirty edge instances p ninety five proxy response latency climbed from four milliseconds up through two eight zero zero milliseconds buy stalling forty five percent of customer checkout r p c queries incident responders isolated the underlying defect inside nginx underscore gateway dot conf buy evaluating connection error logs across slash var slash log edge platform engineers restored connection synchronizat buy increasing keepalive underscore connections buy passing dash dash keepalive requests into proxy configur manifests while reliability engineers right two wi re shark socket reset probes",
+        "refined_text": "During flash sale web traffic, our edge reverse proxies returned bad gateway responses when upstream keepalive connection pools reached backend limits across 16 node gateway proxies instead. Depleted connection pools forced continuous TCP socket recreation by driving gateway CPU utilization to 93 percent across 30 edge instances.\n\nP95 proxy response latency climbed from 4 milliseconds up through 2800 milliseconds by stalling 45 percent of customer checkout RPC queries. Incident responders isolated the underlying defect inside nginx_gateway.conf by evaluating connection error logs across /var/log.\n\nEdge platform engineers restored connection synchronization by increasing keepalive_connections by passing --keepalive-requests into proxy configuration manifests while reliability engineers write 2 Wireshark socket reset probes."
+    },
+
+    # Sample 16: RabbitMQ memory alarm blocking publishers
+    {
+        "raw_asr": "um during automated inventory sync operations our distributed rabbitmq cluster blocked client producers when high watermark memory alarms triggered connection throttling across fourteen knowed message brokers wait twenty message brokers instead basically queued payload backpressure trapped broker socket buffers buy driving broker c p u utiliz to ninety two percent across thirty two cluster instances p ninety nine publish latency jumped from two milliseconds up through two one zero zero milliseconds buy failing thirty five percent of transactional order r p c batches incident responders diagnosed the primary trigger inside rabbitmq underscore memory dot conf buy analyzing memory watermark alerts across slash etc platform reliability engineers restored message communicat buy tuning vm underscore memory underscore limit buy passing dash dash vm memory high watermark into broker configur parameters while platform operators right two r p c consumer drain probes",
+        "refined_text": "During automated inventory sync operations, our distributed RabbitMQ cluster blocked client producers when high watermark memory alarms triggered connection throttling across 20 node message brokers instead. Queued payload backpressure trapped broker socket buffers by driving broker CPU utilization to 92 percent across 32 cluster instances.\n\nP99 publish latency jumped from 2 milliseconds up through 2100 milliseconds by failing 35 percent of transactional order RPC batches. Incident responders diagnosed the primary trigger inside rabbitmq_memory.conf by analyzing memory watermark alerts across /etc.\n\nPlatform reliability engineers restored message communication by tuning vm_memory_limit by passing --vm-memory-high-watermark into broker configuration parameters while platform operators write 2 RPC consumer drain probes."
+    },
+
+    # Sample 17: Cilium eBPF map full errors
+    {
+        "raw_asr": "basically during dynamic container scheduling bursts our kubernetes networking tier suffered pod connection drops when ebpf connection tracking maps reached capacity across twelve knowed cni daemons wait eighteen cni daemons instead um map table overflow discarded incoming network packets buy driving daemon c p u utiliz to ninety five percent across thirty six cluster nodes p ninety five packet delivery latency climbed from four milliseconds up through two seven zero zero milliseconds buy terminating twenty five percent of service r p c handshakes incident responders isolated the underlying defect inside cilium underscore bpf dot yml buy inspecting map capacity alerts across slash var slash log network reliability engineers restored packet operat buy tuning bpf underscore map underscore size buy passing dash dash bpf ct global any max into c n i configur manifests while systems engineers right two c n i flow table probes",
+        "refined_text": "During dynamic container scheduling bursts, our Kubernetes networking tier suffered pod connection drops when eBPF connection tracking maps reached capacity across 18 node CNI daemons instead. Map table overflow discarded incoming network packets by driving daemon CPU utilization to 95 percent across 36 cluster nodes.\n\nP95 packet delivery latency climbed from 4 milliseconds up through 2700 milliseconds by terminating 25 percent of service RPC handshakes. Incident responders isolated the underlying defect inside cilium_bpf.yml by inspecting map capacity alerts across /var/log.\n\nNetwork reliability engineers restored packet operations by tuning bpf_map_size by passing --bpf-ct-global-any-max into CNI configuration manifests while systems engineers write 2 CNI flow table probes."
+    },
+
+    # Sample 18: ClickHouse ZooKeeper metadata sync timeout
+    {
+        "raw_asr": "um during bulk analytical data mutations our clickhouse data warehouse encountered query hang states when distributed zookeeper session timeouts halted part mutations across ten knowed database replicas wait sixteen database replicas instead basically uncommitted table mutations blocked concurrent background merges buy driving server c p u utiliz to ninety one percent across twenty warehouse instances p ninety nine query response latency surged from six milliseconds up through two nine zero zero milliseconds buy failing forty percent of customer analytics r p c queries incident responders isolated the primary trigger inside clickhouse underscore zookeeper dot xml buy analyzing session drop traces across slash var slash log data platform engineers restored mutation communicat buy adjusting operation underscore timeout buy passing dash dash zookeeper session timeout into clickhouse configur parameters while reliability engineers right two r p c replica sync monitors",
+        "refined_text": "During bulk analytical data mutations, our ClickHouse data warehouse encountered query hang states when distributed ZooKeeper session timeouts halted part mutations across 16 node database replicas instead. Uncommitted table mutations blocked concurrent background merges by driving server CPU utilization to 91 percent across 20 warehouse instances.\n\nP99 query response latency surged from 6 milliseconds up through 2900 milliseconds by failing 40 percent of customer analytics RPC queries. Incident responders isolated the primary trigger inside clickhouse_zookeeper.xml by analyzing session drop traces across /var/log.\n\nData platform engineers restored mutation communication by adjusting operation_timeout by passing --zookeeper-session-timeout into ClickHouse configuration parameters while reliability engineers write 2 RPC replica sync monitors."
+    },
+
+    # Sample 19: Elasticsearch ILM rollover freeze
+    {
+        "raw_asr": "basically during log archiving surges our elasticsearch search cluster rejected incoming document writes when index lifecycle management rollover operations failed across fourteen knowed indexing nodes wait twenty indexing nodes instead um blocked rollover steps locked active primary shard allocations buy driving cluster c p u utiliz to ninety four percent across twenty eight data instances p ninety five document write latency climbed from five milliseconds up through two three zero zero milliseconds buy dropping thirty percent of incoming monitoring batches incident responders diagnosed the primary trigger inside elasticsearch underscore ilm dot yml buy reviewing rollover error logs across slash var slash log search platform administrators restored shard synchronizat buy adjusting rollover underscore max underscore age buy passing dash dash cluster routing allocation into cube ctl configur manifests while site reliability engineers right two cube ctl indexing latency probes",
+        "refined_text": "During log archiving surges, our Elasticsearch search cluster rejected incoming document writes when index lifecycle management rollover operations failed across 20 node indexing nodes instead. Blocked rollover steps locked active primary shard allocations by driving cluster CPU utilization to 94 percent across 28 data instances.\n\nP95 document write latency climbed from 5 milliseconds up through 2300 milliseconds by dropping 30 percent of incoming monitoring batches. Incident responders diagnosed the primary trigger inside elasticsearch_ilm.yml by reviewing rollover error logs across /var/log.\n\nSearch platform administrators restored shard synchronization by adjusting rollover_max_age by passing --cluster-routing-allocation into kubectl configuration manifests while site reliability engineers write 2 kubectl indexing latency probes."
+    },
+
+    # Sample 20: PostgreSQL connection pool starvation under pgBouncer
+    {
+        "raw_asr": "um during automated database backup executions our postgres relational database rejected incoming client connections when client connection queues overflowed across twelve knowed connection proxies wait eighteen connection proxies instead basically exhausted proxy pool slots stalled transaction processing buy driving post gres c p u utiliz to ninety three percent across twenty database instances p ninety nine transaction acquisition latency jumped from four milliseconds up through two seven zero zero milliseconds buy failing forty percent of application r p c queries incident responders isolated the primary trigger inside pgbouncer underscore pool dot conf buy reviewing connection pool saturation traces across slash var slash log database reliability engineers stabilized connection terminat buy adjusting default underscore pool underscore size buy passing dash dash max client conn into proxy configur manifests while infrastructure administrators right two post gres connection monitors",
+        "refined_text": "During automated database backup executions, our Postgres relational database rejected incoming client connections when client connection queues overflowed across 18 node connection proxies instead. Exhausted proxy pool slots stalled transaction processing by driving Postgres CPU utilization to 93 percent across 20 database instances.\n\nP99 transaction acquisition latency jumped from 4 milliseconds up through 2700 milliseconds by failing 40 percent of application RPC queries. Incident responders isolated the primary trigger inside pgbouncer_pool.conf by reviewing connection pool saturation traces across /var/log.\n\nDatabase reliability engineers stabilized connection termination by adjusting default_pool_size by passing --max-client-conn into proxy configuration manifests while infrastructure administrators write 2 Postgres connection monitors."
+    }
+]
+
+def main():
+    print(f"Total samples defined: {len(samples)}")
+
+    # Check eval set leakage
+    leakage = False
+    for i, s in enumerate(samples):
+        r = s["raw_asr"].strip().lower()
+        rf = s["refined_text"].strip()
+        if r in eval_raws:
+            print(f"ERROR: Sample {i+1} raw_asr leaks into eval set!")
+            leakage = True
+        if rf in eval_refs:
+            print(f"ERROR: Sample {i+1} refined_text leaks into eval set!")
+            leakage = True
+    if not leakage:
+        print("PASS: Eval leakage check clean (0 overlaps).")
+    else:
+        sys.exit(1)
+
+    # Validate each pair
+    all_valid = True
+    tier_counts = {"short": 0, "medium": 0, "long": 0}
+    layer_counts = []
+
+    for i, s in enumerate(samples):
+        words = len(s["refined_text"].split())
+        target_layers = 3 if words < 25 else 4
+        v_ok, v_reason = validate_pair(s, min_noise_layers=target_layers)
+        c_res, c_reason = clean_sample(s["raw_asr"], s["refined_text"])
+        layers = count_active_noise_layers(s["raw_asr"])
+        layer_count = get_noise_layer_count(s["raw_asr"])
+        layer_counts.append(layer_count)
+
+        if words < 25:
+            tier = "Short"
+            tier_counts["short"] += 1
+        elif words < 90:
+            tier = "Medium"
+            tier_counts["medium"] += 1
+        else:
+            tier = "Long"
+            tier_counts["long"] += 1
+
+        active_layers_str = ", ".join([k for k, v in layers.items() if v])
+        print(f"Sample {i+1:02d} [{tier}, {words}w, {layer_count} layers]: val={v_ok} ({v_reason}), clean={c_reason} | Active: {active_layers_str}")
+
+        if not v_ok:
+            print(f"  FAILED validate_pair: {v_reason}")
+            all_valid = False
+        if c_reason != "kept":
+            print(f"  FAILED clean_sample: {c_reason}")
+            all_valid = False
+
+    # Batch validation
+    b_ok, b_reason, b_tiers = validate_batch(
+        samples, min_short=4, min_medium=6, min_long=10, min_noise_layers=4
+    )
+    print(f"\nBatch validation: ok={b_ok}, reason={b_reason}")
+    print(f"Tier counts: {tier_counts}")
+    print(f"Batch metrics: {b_tiers}")
+
+    if not all_valid or not b_ok:
+        print("VALIDATION FAILED!")
+        sys.exit(1)
+
+    # Output to target file
+    out_path = Path("scratch/subagent_batch_200.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(samples, f, indent=2, ensure_ascii=False)
+    print(f"\nSUCCESS: Written 20 verified samples to {out_path}")
+
+if __name__ == "__main__":
+    main()

@@ -36,7 +36,8 @@ def build_noise_augmentation_prompt() -> str:
         "- Output a single continuous stream of spoken text. Never include newline characters (\\n) or markdown list markers (- , 1.).\n"
         "- Remove punctuation. Use lowercase or inconsistent capitalization.\n"
         "- Keep the core meaning.\n"
-        '- Keep the word count between 0.4x and 1.3x of "refined_text".\n'
+        '- Keep the word count between 0.95x and 1.6x of "refined_text". Spoken ASR with fillers must not be shorter than target text.\n'
+        "- Preserve every technical entity, flag, filename, parameter, and number phonetically. Never drop or omit parameters from noise_raw_asr.\n"
         '- Never output the exact "refined_text".\n'
         "- Make the 10 variants different from each other.\n"
         '- Do not add facts that are not in "refined_text".\n'

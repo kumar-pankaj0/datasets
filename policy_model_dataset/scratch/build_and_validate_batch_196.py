@@ -1,0 +1,230 @@
+import json
+import re
+import sys
+import os
+from pathlib import Path
+
+# Add code directory to path
+sys.path.insert(0, os.path.abspath("code"))
+
+from validator import validate_pair, validate_batch, get_noise_layer_count, count_active_noise_layers, CUT_WORD_REGEX
+from cleaner import clean_sample
+
+# Load eval set for leakage check
+eval_file = Path("sft_eval.json")
+if eval_file.exists():
+    with open(eval_file, "r", encoding="utf-8") as f:
+        eval_data = json.load(f)
+    eval_raws = {e["raw_asr"].strip().lower() for e in eval_data}
+    eval_refs = {e["refined_text"].strip() for e in eval_data}
+else:
+    eval_raws = set()
+    eval_refs = set()
+
+# Domain 1: Cloud-Native Kubernetes & Distributed Infrastructure
+# Batch 196 Composition: 4 Short (<25 words), 6 Medium (25-89 words), 10 Long (90+ words)
+
+batch = [
+    # =========================================================================
+    # Tier 1: Short Utterances (< 25 words) - Exactly 4 samples (Samples 1-4)
+    # Exactly 1 grammatically complete sentence. Zero newlines. Max 1 cut-word.
+    # Noise layers >= 3. Rationale with "by <action>".
+    # =========================================================================
+
+    # Sample 1: Terminating unresponsive pods with kubectl timeout flag
+    {
+        "raw_asr": "um terminat unresponsive worker pods buy executing cube ctl delete with dash dash timeout ten instead",
+        "refined_text": "Terminate unresponsive worker pods by executing kubectl delete with --timeout 10 instead."
+    },
+
+    # Sample 2: Worker node lease configuration inside /etc/kubernetes
+    {
+        "raw_asr": "uh configur worker knowed lease parameters inside slash etc slash kubernetes buy restarting cube let instead",
+        "refined_text": "Configure worker node lease parameters inside /etc/kubernetes by restarting kubelet instead."
+    },
+
+    # Sample 3: Container CPU limits allocation in resource limits
+    {
+        "raw_asr": "so um allocat container c p u cores four background workers buy updating resource underscore limits with dash dash limit instead",
+        "refined_text": "Allocate container CPU cores for background workers by updating resource_limits with --limit instead."
+    },
+
+    # Sample 4: Kubeadm control plane peer discovery initialization
+    {
+        "raw_asr": "uh initializ control plane peer discovery four cube adm buy passing dash dash token discovery with six workers instead",
+        "refined_text": "Initialize control plane peer discovery for kubeadm by passing --token-discovery with 6 workers instead."
+    },
+
+    # =========================================================================
+    # Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples (Samples 5-10)
+    # 1 to 3 grammatically complete sentences. Natural \n\n breaks. Max \n\n: words // 25.
+    # Noise layers >= 4. Rationale with "by <action>".
+    # =========================================================================
+
+    # Sample 5: Cilium BPF connection tracking table limits calibration
+    {
+        "raw_asr": "um calibrat b p f connection tracking table limits inside cilium underscore config dot yaml buy adjusting hash table entries across sixteen wait switch to thirty two worker knowed hosts instead basically reload c n i daemon configurations with cube ctl buy passing dash dash dry run while monitoring packet root drops across eight c p u cores",
+        "refined_text": "Calibrate BPF connection tracking table limits inside cilium_config.yaml by adjusting hash table entries across 32 worker node hosts instead.\n\nReload CNI daemon configurations with kubectl by passing --dry-run while monitoring packet route drops across 8 CPU cores."
+    },
+
+    # Sample 6: CoreDNS forward plugin caching intervals configuration
+    {
+        "raw_asr": "uh configur forward plugin caching intervals inside coredns underscore corefile dot yaml buy raising cache retention thresholds across twelve wait switch to twenty four knowed proxies instead you know initializ upstream query retries with cube ctl buy passing dash dash timeout while inspecting recursive d n s latency across six border resolvers",
+        "refined_text": "Configure forward plugin caching intervals inside coredns_corefile.yaml by raising cache retention thresholds across 24 node proxies instead.\n\nInitialize upstream query retries with kubectl by passing --timeout while inspecting recursive DNS latency across 6 border resolvers."
+    },
+
+    # Sample 7: ArgoCD application reconciliation intervals initialization
+    {
+        "raw_asr": "basically initializ application reconciliation intervals inside argocd underscore config dot yaml buy extending polling timeouts across twenty wait change that to forty deployment manifests instead uh execute cluster synchronizat buy invoking cube ctl with dash dash force while confirming application health across sixteen worker knowed targets",
+        "refined_text": "Initialize application reconciliation intervals inside argocd_config.yaml by extending polling timeouts across 40 deployment manifests instead.\n\nExecute cluster synchronization by invoking kubectl with --force while confirming application health across 16 worker node targets."
+    },
+
+    # Sample 8: Rook-Ceph BlueStore write cache calibration
+    {
+        "raw_asr": "um calibrat bluestore write cache limits inside ceph underscore cluster dot yaml buy expanding osd memory targets across eighteen wait select thirty six storage knowed daemons instead so um terminat degraded osd containers with cube ctl buy passing dash dash grace period zero while stabilizing disk right throughput across eight storage drives",
+        "refined_text": "Calibrate BlueStore write cache limits inside ceph_cluster.yaml by expanding OSD memory targets across 36 storage node daemons instead.\n\nTerminate degraded OSD containers with kubectl by passing --grace-period 0 while stabilizing disk write throughput across 8 storage drives."
+    },
+
+    # Sample 9: Linkerd proxy memory limits allocation and mTLS rotation
+    {
+        "raw_asr": "so basically allocat proxy memory limits inside linkerd underscore values dot yaml buy raising heap boundaries across ten wait switch to twenty gateway pods instead uh initializ automatic mutual t l s rotation buy invoking cube ctl with dash dash namespace linkerd four four edge proxies",
+        "refined_text": "Allocate proxy memory limits inside linkerd_values.yaml by raising heap boundaries across 20 gateway pods instead.\n\nInitialize automatic mutual TLS rotation by invoking kubectl with --namespace linkerd for 4 edge proxies."
+    },
+
+    # Sample 10: Longhorn distributed block storage replica migration
+    {
+        "raw_asr": "um migrat volume replica mappings inside longhorn underscore settings dot yaml buy rebalancing replica storage paths across twelve wait select twenty four storage knowed daemons instead basically synchronizat replica disk blocks with cube ctl buy passing dash dash timeout while verifying volume recovery across six replica partitions",
+        "refined_text": "Migrate volume replica mappings inside longhorn_settings.yaml by rebalancing replica storage paths across 24 storage node daemons instead.\n\nSynchronize replica disk blocks with kubectl by passing --timeout while verifying volume recovery across 6 replica partitions."
+    },
+
+    # =========================================================================
+    # Tier 3: Long Utterances (90+ words) - Exactly 10 samples (Samples 11-20)
+    # Multi-paragraph structure separated by \n\n. Zero numbered checklists.
+    # Natural spoken engineer narration. Ratio 0.35 - 1.25. Max \n\n: words // 25.
+    # Noise layers >= 4. Rationale with "by <action>".
+    # =========================================================================
+
+    # Sample 11: KEDA autoscaling queue depth evaluation and consumer scaling
+    {
+        "raw_asr": "basically our event streaming platform squad resolved consumer lag spikes inside keda underscore scaledobject dot yaml buy analyzing rabbit m q queue depth metrics across sixteen wait thirty two worker knowed hosts instead previously delayed consumer scaling triggered queue backpressure across fifty worker pods buy exhausting queue buffer memory during peak ingestion hours um reliability engineers configur queue evaluation intervals buy raising polling intervals towards thirty seconds buy passing dash dash timeout into keda operator arguments platform operators stabilized consumer replica throughput buy allocat dedicated worker processes across twelve worker knowed hosts with cube ctl you know right four verification tests confirming scaled consumer pod throughput under burst message delivery buy monitoring queue drain rates across staging clusters",
+        "refined_text": "Our event streaming platform squad resolved consumer lag spikes inside keda_scaledobject.yaml by analyzing RabbitMQ queue depth metrics across 32 worker node hosts instead. Previously delayed consumer scaling triggered queue backpressure across 50 worker pods by exhausting queue buffer memory during peak ingestion hours.\n\nReliability engineers configured queue evaluation intervals by raising polling intervals towards 30 seconds by passing --timeout into KEDA operator arguments. Platform operators stabilized consumer replica throughput by allocating dedicated worker processes across 12 worker node hosts with kubectl.\n\nWrite 4 verification tests confirming scaled consumer pod throughput under burst message delivery by monitoring queue drain rates across staging clusters."
+    },
+
+    # Sample 12: Cilium Envoy embedded ingress buffer overflow and connection keepalive
+    {
+        "raw_asr": "um our service mesh infrastructure engineering squad diagnosed ingress gateway buffer overruns inside cilium underscore envoy dot yaml buy reviewing connection reset logs across twenty wait forty worker knowed instances instead high concurrency connection bursts exhausted stream buffers buy triggering unexpected connection resets across eighty service endpoints so um network engineers configur stream buffer boundaries buy raising connection keepalive timers towards forty five seconds buy passing dash dash config path into cilium proxy settings infrastructure operators restored gateway throughput buy allocat expanded memory limits across sixteen worker knowed hosts with cube ctl you know right four integration tests validating envoy stream buffer retention under high client concurrency buy inspecting socket connection lifecycles across staging clusters",
+        "refined_text": "Our service mesh infrastructure engineering squad diagnosed ingress gateway buffer overruns inside cilium_envoy.yaml by reviewing connection reset logs across 40 worker node instances instead. High concurrency connection bursts exhausted stream buffers by triggering unexpected connection resets across 80 service endpoints.\n\nNetwork engineers configured stream buffer boundaries by raising connection keepalive timers towards 45 seconds by passing --config-path into Cilium proxy settings. Infrastructure operators restored gateway throughput by allocating expanded memory limits across 16 worker node hosts with kubectl.\n\nWrite 4 integration tests validating Envoy stream buffer retention under high client concurrency by inspecting socket connection lifecycles across staging clusters."
+    },
+
+    # Sample 13: Thanos Querier deduplication engine and store gateway streaming timeouts
+    {
+        "raw_asr": "basically our enterprise observability platform team investigated querier timeout spikes inside thanos underscore querier dot yaml buy inspecting store gateway g r p c response latency across eighteen wait thirty six metric store gateways instead unoptimized chunk queries caused query engine stalls buy delaying metric rendering across ninety dashboard panels uh telemetry engineers configur store query timeouts buy extending store gateway deadlines towards sixty seconds buy passing dash dash timeout into thanos querier parameters platform operators stabilized metric aggregation buy initializ multi tenant deduplication buffers across twenty worker knowed instances with cube ctl you know right three regression tests confirming time series deduplicat under distributed store query fanout buy tracking response durations across staging environments",
+        "refined_text": "Our enterprise observability platform team investigated querier timeout spikes inside thanos_querier.yaml by inspecting store gateway gRPC response latency across 36 metric store gateways instead. Unoptimized chunk queries caused query engine stalls by delaying metric rendering across 90 dashboard panels.\n\nTelemetry engineers configured store query timeouts by extending store gateway deadlines towards 60 seconds by passing --timeout into Thanos querier parameters. Platform operators stabilized metric aggregation by initializing multi-tenant deduplication buffers across 20 worker node instances with kubectl.\n\nWrite 3 regression tests confirming time series deduplication under distributed store query fanout by tracking response durations across staging environments."
+    },
+
+    # Sample 14: OpenSearch operator cluster shard allocation and Lucene segment merging
+    {
+        "raw_asr": "um our distributed logging operations council diagnosed cluster indexing stalls inside opensearch underscore cluster dot yaml buy analyzing primary shard allocation failures across fourteen wait twenty eight data knowed instances instead heavy log ingestion bursts overwhelmed lucene segment mergers buy blocking bulk write requests across sixty logging namespaces so um logging platform engineers configur shard allocation limits buy raising concurrent recovery streams towards eight streams buy passing dash dash cluster name into opensearch cluster configurations systems architects stabilized search cluster health buy allocat expanded heap caches across twelve worker knowed instances with cube ctl you know right four verification tests verifying segment merging throughput under peak indexing load buy monitoring write queue depths across staging targets",
+        "refined_text": "Our distributed logging operations council diagnosed cluster indexing stalls inside opensearch_cluster.yaml by analyzing primary shard allocation failures across 28 data node instances instead. Heavy log ingestion bursts overwhelmed Lucene segment mergers by blocking bulk write requests across 60 logging namespaces.\n\nLogging platform engineers configured shard allocation limits by raising concurrent recovery streams towards 8 streams by passing --cluster-name into OpenSearch cluster configurations. Systems architects stabilized search cluster health by allocating expanded heap caches across 12 worker node instances with kubectl.\n\nWrite 4 verification tests verifying segment merging throughput under peak indexing load by monitoring write queue depths across staging targets."
+    },
+
+    # Sample 15: Falco eBPF runtime security rule engine and kernel syscall buffer drops
+    {
+        "raw_asr": "basically our security operations engineering squad investigated security alert dropouts inside falco underscore rules dot yaml buy inspecting kernel ring buffer drop statistics across sixteen wait thirty two worker knowed hosts instead high syscall event volume saturated e b p f ring buffers buy dropping critical audit events across seventy container workloads uh security engineers configur ring buffer capacity thresholds buy raising kernel buffer sizes towards one hundred megabytes buy passing dash dash config into falco security daemon flags platform operators stabilized rule evaluation buy terminat unmonitored event streams across eight worker knowed instances with cube ctl you know right three integration tests confirming runtime rule enforcement under high syscall stress buy verifying alert delivery pipelines across staging clusters",
+        "refined_text": "Our security operations engineering squad investigated security alert dropouts inside falco_rules.yaml by inspecting kernel ring buffer drop statistics across 32 worker node hosts instead. High syscall event volume saturated eBPF ring buffers by dropping critical audit events across 70 container workloads.\n\nSecurity engineers configured ring buffer capacity thresholds by raising kernel buffer sizes towards 100 megabytes by passing --config into Falco security daemon flags. Platform operators stabilized rule evaluation by terminating unmonitored event streams across 8 worker node instances with kubectl.\n\nWrite 3 integration tests confirming runtime rule enforcement under high syscall stress by verifying alert delivery pipelines across staging clusters."
+    },
+
+    # Sample 16: Harbor container registry garbage collection and blob storage reclamation
+    {
+        "raw_asr": "um our artifact registry infrastructure squad resolved image registry synchronizat stalls inside harbor underscore registry dot yaml buy inspecting blob replication status across ten wait twenty distribution endpoints instead uncollected untagged manifest blobs consumed registry storage buy slowing registry replication jobs across forty application namespaces so um systems engineers configur garbage collection schedules buy reducing sweep execution windows towards two hours buy passing dash dash timeout into harbor jobservice containers platform operators stabilized blob storage buy terminat orphaned upload sessions across six worker knowed instances with cube ctl you know right four verification tests validating automated garbage collection under burst image pushes buy tracking storage volume reclamation across staging environments",
+        "refined_text": "Our artifact registry infrastructure squad resolved image registry synchronization stalls inside harbor_registry.yaml by inspecting blob replication status across 20 distribution endpoints instead. Uncollected untagged manifest blobs consumed registry storage by slowing registry replication jobs across 40 application namespaces.\n\nSystems engineers configured garbage collection schedules by reducing sweep execution windows towards 2 hours by passing --timeout into Harbor jobservice containers. Platform operators stabilized blob storage by terminating orphaned upload sessions across 6 worker node instances with kubectl.\n\nWrite 4 verification tests validating automated garbage collection under burst image pushes by tracking storage volume reclamation across staging environments."
+    },
+
+    # Sample 17: Karpenter cluster autoscaler provisioner drift detection
+    {
+        "raw_asr": "basically our cloud cost optimization squad investigated compute node provisioning stalls inside karpenter underscore provisioner dot yaml buy analyzing instance launch failure rates across twenty wait forty worker knowed instances instead configuration drift between provisioner specs and live machine templates caused launch rejections buy interrupting pod scheduling across fifty stateful workloads uh infrastructure architects configur drift detection parameters buy raising provisioner reconciliation intervals towards fifteen minutes buy passing dash dash timeout into karpenter controller settings platform operators stabilized node provisioning buy allocat fallback instance types across twelve worker knowed hosts with cube ctl you know right four integration tests verifying dynamic compute provisioning under high scaling churn buy tracking node launch duration across staging clusters",
+        "refined_text": "Our cloud cost optimization squad investigated compute node provisioning stalls inside karpenter_provisioner.yaml by analyzing instance launch failure rates across 40 worker node instances instead. Configuration drift between provisioner specs and live machine templates caused launch rejections by interrupting pod scheduling across 50 stateful workloads.\n\nInfrastructure architects configured drift detection parameters by raising provisioner reconciliation intervals towards 15 minutes by passing --timeout into Karpenter controller settings. Platform operators stabilized node provisioning by allocating fallback instance types across 12 worker node hosts with kubectl.\n\nWrite 4 integration tests verifying dynamic compute provisioning under high scaling churn by tracking node launch duration across staging clusters."
+    },
+
+    # Sample 18: Jaeger distributed tracing agent UDP thrift socket buffer drops
+    {
+        "raw_asr": "um our distributed tracing platform squad diagnosed trace span loss inside jaeger underscore agent dot yaml buy inspecting u d p thrift socket buffer drops across eighteen wait thirty six worker knowed hosts instead high trace sampling rates saturated socket buffer memory buy dropping distributed traces across sixty microservice pods so um observability engineers configur batch processing limits buy raising span queue boundaries towards five thousand spans buy passing dash dash collector host into jaeger agent daemon settings platform operators stabilized trace ingestion buy terminat leaking agent sidecar pods across eight worker knowed instances with cube let you know right three integration tests confirming distributed span collection under peak network throughput buy monitoring trace completeness across staging environments",
+        "refined_text": "Our distributed tracing platform squad diagnosed trace span loss inside jaeger_agent.yaml by inspecting UDP thrift socket buffer drops across 36 worker node hosts instead. High trace sampling rates saturated socket buffer memory by dropping distributed traces across 60 microservice pods.\n\nObservability engineers configured batch processing limits by raising span queue boundaries towards 5000 spans by passing --collector-host into Jaeger agent daemon settings. Platform operators stabilized trace ingestion by terminating leaking agent sidecar pods across 8 worker node instances with kubelet.\n\nWrite 3 integration tests confirming distributed span collection under peak network throughput by monitoring trace completeness across staging environments."
+    },
+
+    # Sample 19: Cert-Manager ACME DNS01 challenge solver timeout
+    {
+        "raw_asr": "basically our platform security operations team investigated certificate renewal failures inside certmanager underscore issuer dot yaml buy reviewing a c m e dns challenge logs across twelve wait twenty four ingress knowed hosts instead slow authoritative d n s propagation delayed challenge verification buy causing certificate expiration across thirty public service domains uh security engineers configur challenge check retry intervals buy extending verification deadlines towards thirty minutes buy passing dash dash timeout into cert manager controller startup flags systems operators stabilized certificate issuance buy initializ dedicated webhook worker replicas across six worker knowed instances with cube ctl you know right four verification tests validating automated certificate renewal under multi domain ingress churn buy tracking certificate validity status across staging clusters",
+        "refined_text": "Our platform security operations team investigated certificate renewal failures inside certmanager_issuer.yaml by reviewing ACME DNS challenge logs across 24 ingress node hosts instead. Slow authoritative DNS propagation delayed challenge verification by causing certificate expiration across 30 public service domains.\n\nSecurity engineers configured challenge check retry intervals by extending verification deadlines towards 30 minutes by passing --timeout into cert-manager controller startup flags. Systems operators stabilized certificate issuance by initializing dedicated webhook worker replicas across 6 worker node instances with kubectl.\n\nWrite 4 verification tests validating automated certificate renewal under multi-domain ingress churn by tracking certificate validity status across staging clusters."
+    },
+
+    # Sample 20: Istio ambient mesh ztunnel mutual TLS socket handshake
+    {
+        "raw_asr": "um our service mesh architecture team investigated socket handshake degradation inside ztunnel underscore config dot yaml buy reviewing mutual t l s session metrics across sixteen wait thirty two worker knowed hosts instead e b p f redirection table collisions delayed socket handshakes buy increasing inter service connection latency across seventy backend workloads so um mesh platform engineers configur redirection socket parameters buy raising connection handshake timeouts towards twenty seconds buy passing dash dash timeout into ztunnel daemon configurations infrastructure operators restored network throughput buy allocat dedicated worker threads across eight c p u cores with cube let you know right four integration tests validating secure socket forwarding under continuous mesh pod restarts buy measuring handshake duration across staging targets",
+        "refined_text": "Our service mesh architecture team investigated socket handshake degradation inside ztunnel_config.yaml by reviewing mutual TLS session metrics across 32 worker node hosts instead. eBPF redirection table collisions delayed socket handshakes by increasing inter-service connection latency across 70 backend workloads.\n\nMesh platform engineers configured redirection socket parameters by raising connection handshake timeouts towards 20 seconds by passing --timeout into ztunnel daemon configurations. Infrastructure operators restored network throughput by allocating dedicated worker threads across 8 CPU cores with kubelet.\n\nWrite 4 integration tests validating secure socket forwarding under continuous mesh pod restarts by measuring handshake duration across staging targets."
+    }
+]
+
+print(f"Total candidate samples: {len(batch)}")
+assert len(batch) == 20, f"Expected 20 samples, got {len(batch)}"
+
+tiers = {"short": 0, "medium": 0, "long": 0}
+layer_counts = []
+all_valid = True
+
+for idx, pair in enumerate(batch, 1):
+    raw = pair["raw_asr"]
+    ref = pair["refined_text"]
+
+    # ASCII check
+    raw.encode("ascii")
+    ref.encode("ascii")
+
+    # Leakage check
+    assert raw.strip().lower() not in eval_raws, f"Sample {idx} raw leaked into sft_eval.json!"
+    assert ref.strip() not in eval_refs, f"Sample {idx} ref leaked into sft_eval.json!"
+
+    # Word count and tier check
+    words = len(ref.split())
+    nl = get_noise_layer_count(raw)
+    layer_counts.append(nl)
+
+    if words < 25:
+        tiers["short"] += 1
+        assert "\n" not in ref, f"Sample {idx} has newline in short tier!"
+        assert nl >= 3, f"Sample {idx} short tier active layers < 3 ({nl})"
+        val_ok, val_reason = validate_pair(pair, min_noise_layers=3)
+    elif words < 90:
+        tiers["medium"] += 1
+        assert nl >= 4, f"Sample {idx} medium tier active layers < 4 ({nl})"
+        val_ok, val_reason = validate_pair(pair, min_noise_layers=4)
+    else:
+        tiers["long"] += 1
+        assert "\n\n" in ref, f"Sample {idx} missing paragraph breaks in long tier!"
+        assert nl >= 4, f"Sample {idx} long tier active layers < 4 ({nl})"
+        val_ok, val_reason = validate_pair(pair, min_noise_layers=4)
+
+    clean_pair, clean_status = clean_sample(raw, ref)
+
+    print(f"Sample {idx:02d} [{words:3d} words, {nl}/6 layers]: validate_pair={val_ok} ({val_reason}) | clean_sample={clean_status}")
+    if not val_ok or clean_pair is None:
+        all_valid = False
+
+avg_layers = sum(layer_counts) / len(layer_counts)
+print("\n--- Summary ---")
+print(f"Tiers: {tiers}")
+print(f"Average Noise Layers: {avg_layers:.2f}")
+
+# Validate batch
+b_ok, b_reason, b_stats = validate_batch(batch, min_short=4, min_medium=6, min_long=10, min_noise_layers=4)
+print(f"validate_batch: ok={b_ok}, reason={b_reason}")
+print(f"batch_stats: {b_stats}")
+
+if all_valid and b_ok:
+    output_path = "scratch/subagent_batch_196.json"
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(batch, f, indent=2, ensure_ascii=False)
+    print(f"\nSUCCESS! All 20 samples passed. Saved to {output_path}")
+else:
+    print("\nFAILED! Please fix errors above.")
+    sys.exit(1)

@@ -23,11 +23,12 @@ FAITHFULNESS = r"""<faithfulness>
 
 The output preserves every technical fact from the raw input. It does **not** add, remove, or swap any technical entity.
 
-The model must understand the full context and use semantic reasoning to fill in what is most likely correct — like filling in a blank based on everything around it. When a word or phrase is ambiguous, the model must infer the most contextually plausible resolution, not guess randomly.
+The task is strictly conservative acoustic post-correction. Never complete partial commands or invent missing arguments. Treat the raw speech as the single source of truth.
 
 **Rules:**
-- Keep all numbers, commands, file names, error codes, and parameters exactly yeah this part is important when you see one and two in raw_asr text better is model convert it to 1 and 2 i think you understand. .
-- Never invent a detail that was not in the raw input.
+- Keep all numbers, commands, file names, error codes, and parameters exact. Convert spelled-out numbers (e.g., "one and two") to digits ("1 and 2").
+- Never invent a detail, flag, filename, or parameter that was not spoken in the raw input.
+- Never add unprompted operational justification clauses (e.g., "to safely...", "to prevent...", "in order to...").
 - Never swap one technical term for another (e.g., `VPN` must not become `VPC`).
 - When uncertain, preserve the raw form rather than hallucinate.
 

@@ -1,0 +1,237 @@
+import json
+import re
+import sys
+import os
+from pathlib import Path
+
+# Add code directory to path
+sys.path.insert(0, os.path.abspath("code"))
+
+from validator import validate_pair, validate_batch, get_noise_layer_count, count_active_noise_layers
+from cleaner import clean_sample
+
+# Load eval set for leakage check
+eval_file = Path("sft_eval.json")
+with open(eval_file, "r", encoding="utf-8") as f:
+    eval_data = json.load(f)
+eval_raws = {e["raw_asr"].strip().lower() for e in eval_data}
+eval_refs = {e["refined_text"].strip() for e in eval_data}
+
+# Domain 3 & 5: Pull Request Code Reviews & Technical Mentoring
+# Batch 193 Composition: 4 Short (<25 words), 6 Medium (25-89 words), 10 Long (90+ words)
+
+samples = [
+    # =========================================================================
+    # Tier 1: Short Utterances (< 25 words) - Exactly 4 samples (Samples 1-4)
+    # Exactly 1 grammatically complete sentence. Zero newlines. Max 1 cut-word.
+    # Noise layers >= 3 (target 5-6).
+    # =========================================================================
+
+    # Sample 1: Domain 3 (PR Review) - Deadlock prevention in mutex lock ordering
+    {
+        "raw_asr": "um please synchronizat c p u mutex acquisition passes buy sorting mutex keys inside lock underscore hierarchy instead",
+        "refined_text": "Please synchronize CPU mutex acquisition passes by sorting mutex keys inside lock_hierarchy instead."
+    },
+
+    # Sample 2: Domain 5 (Technical Mentoring) - Ring buffer packet slot allocation
+    {
+        "raw_asr": "basically allocat sixteen packet slots four r p c frame buffers with dash dash buffer size instead",
+        "refined_text": "Allocate 16 packet slots for RPC frame buffers with `--buffer-size` instead."
+    },
+
+    # Sample 3: Domain 3 (PR Review) - Socket timeout threshold recalculation
+    {
+        "raw_asr": "uh please recalculat connection timeout thresholds buy querying post gres heartbeat counters inside socket underscore manager instead",
+        "refined_text": "Please recalculate connection timeout thresholds by querying Postgres heartbeat counters inside socket_manager instead."
+    },
+
+    # Sample 4: Domain 5 (Technical Mentoring) - Coroutine worker pool configuration
+    {
+        "raw_asr": "um configur thirty two worker routines buy binding two a sink tasks inside coroutine underscore pool instead",
+        "refined_text": "Configure 32 worker routines by binding to async tasks inside coroutine_pool instead."
+    },
+
+    # =========================================================================
+    # Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples (Samples 5-10)
+    # 1 to 3 grammatically complete sentences. Natural \n\n breaks. Max \n\n: words // 25.
+    # Noise layers >= 4 (target 5-6).
+    # =========================================================================
+
+    # Sample 5: Domain 3 (PR Review) - SQL query plan regression & composite index
+    {
+        "raw_asr": "in this pull request review on query underscore router dot py sequential table scans degrade throughput across twenty four worker tasks buy omitting composite index keys wait switch to covering indexes instead um please configur sixteen database query planners four the post gres cluster resolving c p u execution spikes you know",
+        "refined_text": "In this pull request review on query_router.py, sequential table scans degrade throughput across 24 worker tasks by omitting composite index keys, switching to covering indexes instead.\n\nPlease configure 16 database query planners for the Postgres cluster, resolving CPU execution spikes."
+    },
+
+    # Sample 6: Domain 5 (Technical Mentoring) - Memory-mapped I/O page cache dirty flushes
+    {
+        "raw_asr": "during our systems programming mentoring on memory mapped storage we analyzed why synchronous page flushes stall storage controllers across twelve worker threads buy triggering blocking disk writes wait switch to asynchronous msync passes instead uh please initializ thirty two memory mapping descriptors four d m a transfer buffers inside mmap underscore storage dot c cutting c p u write latency basically",
+        "refined_text": "During our systems programming mentoring on memory-mapped storage, we analyzed why synchronous page flushes stall storage controllers across 12 worker threads by triggering blocking disk writes, switching to asynchronous msync passes instead.\n\nPlease initialize 32 memory mapping descriptors for DMA transfer buffers inside mmap_storage.c, cutting CPU write latency."
+    },
+
+    # Sample 7: Domain 3 (PR Review) - WebSocket connection backpressure & buffer draining
+    {
+        "raw_asr": "in your pull request review on socket underscore handler dot py unbuffered websocket write loops trigger client disconnections across sixteen proxy sessions buy buffering pending frames on slow network links wait change that to backpressure watermarks instead um please deduplicat eight outbound message streams four the a sink i o event loop eliminating socket buffer bloat you know",
+        "refined_text": "In your pull request review on socket_handler.py, unbuffered WebSocket write loops trigger client disconnections across 16 proxy sessions by buffering pending frames on slow network links, changing that to backpressure watermarks instead.\n\nPlease deduplicate 8 outbound message streams for the asyncio event loop, eliminating socket buffer bloat."
+    },
+
+    # Sample 8: Domain 5 (Technical Mentoring) - Cache line false sharing on SMP systems
+    {
+        "raw_asr": "when coaching our systems engineer on multi core synchronization we evaluated why concurrent writes stall processor interconnects across sixteen c p u cores buy packing independent atomic counters on one cache line wait switch to padded memory structures instead uh please allocat sixty four byte cache boundaries four atomic counters inside counter underscore bank dot c reducing bus snooping overhead basically",
+        "refined_text": "When coaching our systems engineer on multi-core synchronization, we evaluated why concurrent writes stall processor interconnects across 16 CPU cores by packing independent atomic counters on one cache line, switching to padded memory structures instead.\n\nPlease allocate 64 byte cache boundaries for atomic counters inside counter_bank.c, reducing bus snooping overhead."
+    },
+
+    # Sample 9: Domain 3 (PR Review) - Database connection pool leak during retry loops
+    {
+        "raw_asr": "in this pull request review on db underscore pool dot py failing database transactions hold active connection leases across twenty worker routines buy missing explicit release calls on transient query errors wait change that to scoped context managers instead um please synchronizat twelve connection leases four the post gres client pool eliminating connection starvation you know",
+        "refined_text": "In this pull request review on db_pool.py, failing database transactions hold active connection leases across 20 worker routines by missing explicit release calls on transient query errors, changing that to scoped context managers instead.\n\nPlease synchronize 12 connection leases for the Postgres client pool, eliminating connection starvation."
+    },
+
+    # Sample 10: Domain 5 (Technical Mentoring) - Cooperative coroutine scheduling vs thread preemption
+    {
+        "raw_asr": "during our concurrency mentoring discussion we reviewed why compute heavy tight loops block executor threads across eight worker pools buy monopolizing event loops without yielding control wait change that to explicit yield points instead uh please terminat sixteen starved a sink tasks four r p c handlers inside coroutine underscore dispatcher dot rs resolving event loop latency spikes so basically",
+        "refined_text": "During our concurrency mentoring discussion, we reviewed why compute-heavy tight loops block executor threads across 8 worker pools by monopolizing event loops without yielding control, changing that to explicit yield points instead.\n\nPlease terminate 16 starved async tasks for RPC handlers inside coroutine_dispatcher.rs, resolving event loop latency spikes."
+    },
+
+    # =========================================================================
+    # Tier 3: Long Utterances (90+ words) - Exactly 10 samples (Samples 11-20)
+    # Multi-paragraph separated by \n\n (2 solid paragraphs). Max \n\n: words // 25.
+    # Natural spoken engineer narration. Zero numbered checklist stereotypes.
+    # Noise layers >= 4 (target 5-6).
+    # =========================================================================
+
+    # Sample 11: Domain 3 (PR Review) - Hash table rehashing lock contention and latency spikes
+    {
+        "raw_asr": "in this pull request review on table underscore partition dot py concurrent bulk write operations trigger severe latency spikes across twenty four worker instances buy executing synchronous rehashing passes on shared partition tables wait switch to incremental rehashing buckets instead uh under heavy write traffic unpartitioned hash tables escalate write locks buy stalling concurrent queries across sixteen post gres worker routines and causing tail latency spikes across eight cluster knowed hosts so basically synchronizat bucket allocation passes buy resizing hash buckets in small incremental slices wait change that to background rehashing tasks instead um please configur thirty two hash table buckets four the ingestion pipeline resolving c p u lock contention you know",
+        "refined_text": "In this pull request review on table_partition.py, concurrent bulk write operations trigger severe latency spikes across 24 worker instances by executing synchronous rehashing passes on shared partition tables, switching to incremental rehashing buckets instead. Under heavy write traffic, unpartitioned hash tables escalate write locks by stalling concurrent queries across 16 Postgres worker routines and causing tail latency spikes across 8 cluster node hosts.\n\nSynchronize bucket allocation passes by resizing hash buckets in small incremental slices, changing that to background rehashing tasks instead. Configure 32 hash table buckets for the ingestion pipeline, resolving CPU lock contention."
+    },
+
+    # Sample 12: Domain 5 (Technical Mentoring) - Epoll edge-triggered vs level-triggered IO multiplexing
+    {
+        "raw_asr": "during our systems programming mentoring on network event loops we investigated why edge triggered epoll instances drop incoming socket payloads across twelve knowed connections buy exiting read loops before reading all pending bytes wait switch to loop iterations until eagain occurs instead uh level triggered polling wakes the dispatcher thread repeatedly buy burning excess c p u cycles whenever buffer data remains unread across sixteen socket streams so basically initializ thirty two socket event queues buy consuming incoming stream bytes in non blocking chunks wait change that to batch socket reads instead um please terminat eight idle connection descriptors four r p c listener sockets inside event underscore demux dot c eliminating thread starvation you know",
+        "refined_text": "During our systems programming mentoring on network event loops, we investigated why edge-triggered epoll instances drop incoming socket payloads across 12 node connections by exiting read loops before reading all pending bytes, switching to loop iterations until EAGAIN occurs instead. Level-triggered polling wakes the dispatcher thread repeatedly by burning excess CPU cycles whenever buffer data remains unread across 16 socket streams.\n\nInitialize 32 socket event queues by consuming incoming stream bytes in non-blocking chunks, changing that to batch socket reads instead. Terminate 8 idle connection descriptors for RPC listener sockets inside event_demux.c, eliminating thread starvation."
+    },
+
+    # Sample 13: Domain 3 (PR Review) - Circuit breaker flapping and transient error cascades
+    {
+        "raw_asr": "in this pull request review on circuit underscore breaker dot py rapid state transitions between open and closed degrade downstream service reliability across twenty four worker instances buy resetting failure counters on the first successful request wait switch to half open error rate windows instead uh during transient network partitions immediate circuit closures flood recovering backends buy dispatching thousands of requests across sixteen post gres database pools and causing c p u thrashing across eight server clusters so basically allocat thirty two sliding error windows buy tracking success percentages over time wait change that to exponential backoff delays instead um please recalculat circuit trip thresholds four ingress r p c requests resolving cascading outage storms you know",
+        "refined_text": "In this pull request review on circuit_breaker.py, rapid state transitions between open and closed degrade downstream service reliability across 24 worker instances by resetting failure counters on the first successful request, switching to half-open error rate windows instead. During transient network partitions, immediate circuit closures flood recovering backends by dispatching thousands of requests across 16 Postgres database pools and causing CPU thrashing across 8 server clusters.\n\nAllocate 32 sliding error windows by tracking success percentages over time, changing that to exponential backoff delays instead. Recalculate circuit trip thresholds for ingress RPC requests, resolving cascading outage storms."
+    },
+
+    # Sample 14: Domain 5 (Technical Mentoring) - LSM-tree write amplification and memtable flush stalls
+    {
+        "raw_asr": "during our technical mentoring session on storage engine architecture we analyzed why unthrottled write workloads stall database throughput across sixteen worker routines buy filling memtables faster than disk compaction threads can flush wait switch to rate limited write buffers instead uh when background compactions lag behind incoming write traffic write stalls freeze r p c pipelines buy blocking client request threads across twelve knowed instances and consuming excess c p u cycles across eight compaction tasks so basically synchronizat memtable flush queues buy prioritizing level zero compaction passes wait change that to tiered compaction runs instead um please configur twenty four write buffer partitions four the storage layer inside lsm underscore storage dot rs scaling database write bandwidth you know",
+        "refined_text": "During our technical mentoring session on storage engine architecture, we analyzed why unthrottled write workloads stall database throughput across 16 worker routines by filling memtables faster than disk compaction threads can flush, switching to rate-limited write buffers instead. When background compactions lag behind incoming write traffic, write stalls freeze RPC pipelines by blocking client request threads across 12 node instances and consuming excess CPU cycles across 8 compaction tasks.\n\nSynchronize memtable flush queues by prioritizing level-zero compaction passes, changing that to tiered compaction runs instead. Configure 24 write buffer partitions for the storage layer inside lsm_storage.rs, scaling database write bandwidth."
+    },
+
+    # Sample 15: Domain 3 (PR Review) - Read-after-write replication lag anomalies
+    {
+        "raw_asr": "in this pull request review on replica underscore router dot py serving read requests immediately after record updates returns stale entity state across twenty four client sessions buy routing queries two asynchronous read replicas wait switch to session based read consistency instead uh under heavy transaction volume replication delay desynchronizes client state buy serving outdated record versions across sixteen post gres replica servers and causing validation errors across eight billing services so basically terminat unversioned read dispatch loops buy attaching monotonic log sequence numbers wait change that to primary database fallbacks instead um please initializ twelve session token routers four incoming a sink queries resolving stale replica reads you know",
+        "refined_text": "In this pull request review on replica_router.py, serving read requests immediately after record updates returns stale entity state across 24 client sessions by routing queries to asynchronous read replicas, switching to session-based read consistency instead. Under heavy transaction volume, replication delay desynchronizes client state by serving outdated record versions across 16 Postgres replica servers and causing validation errors across 8 billing services.\n\nTerminate unversioned read dispatch loops by attaching monotonic log sequence numbers, changing that to primary database fallbacks instead. Initialize 12 session token routers for incoming async queries, resolving stale replica reads."
+    },
+
+    # Sample 16: Domain 5 (Technical Mentoring) - Zero-copy network socket splicing with splice/sendfile
+    {
+        "raw_asr": "when coaching our systems engineer on high performance network proxies we evaluated why userspace buffer copying bottlenecks network throughput across sixteen worker threads buy copying socket payloads back and forth between kernel and userspace buffers wait switch to zero copy splice syscalls instead uh allocating transient userspace buffers triggers high memory bus traffic buy generating unnecessary memory copies across twenty r p c socket channels and burning c p u cycles across eight knowed instances so basically allocat thirty two kernel pipe descriptors buy establishing direct kernel buffer transfers wait change that to sendfile pipelines instead um please deduplicat eight buffer allocation passes four incoming stream sessions inside stream underscore relay dot c eliminating memory bandwidth saturation you know",
+        "refined_text": "When coaching our systems engineer on high-performance network proxies, we evaluated why userspace buffer copying bottlenecks network throughput across 16 worker threads by copying socket payloads back and forth between kernel and userspace buffers, switching to zero-copy splice syscalls instead. Allocating transient userspace buffers triggers high memory bus traffic by generating unnecessary memory copies across 20 RPC socket channels and burning CPU cycles across 8 node instances.\n\nAllocate 32 kernel pipe descriptors by establishing direct kernel buffer transfers, changing that to sendfile pipelines instead. Deduplicate 8 buffer allocation passes for incoming stream sessions inside stream_relay.c, eliminating memory bandwidth saturation."
+    },
+
+    # Sample 17: Domain 3 (PR Review) - Bounded thread pool executor rejection policies
+    {
+        "raw_asr": "in this pull request review on worker underscore pool dot py unhandled thread pool rejections discard incoming background jobs across twenty four client modules buy throwing unhandled queue full exceptions wait change that to caller runs execution policies instead uh during bursty traffic spikes saturated queue buffers drop critical background tasks buy rejecting incoming job requests across sixteen post gres transaction monitors and stalling c p u execution across eight worker processes so basically configur sixteen task buffer partitions buy setting bounded backpressure limits wait switch to graceful retry backoff instead um please terminat eight stalled thread routines four the a sink task dispatcher resolving task execution loss you know",
+        "refined_text": "In this pull request review on worker_pool.py, unhandled thread pool rejections discard incoming background jobs across 24 client modules by throwing unhandled queue-full exceptions, changing that to caller-runs execution policies instead. During bursty traffic spikes, saturated queue buffers drop critical background tasks by rejecting incoming job requests across 16 Postgres transaction monitors and stalling CPU execution across 8 worker processes.\n\nConfigure 16 task buffer partitions by setting bounded backpressure limits, switching to graceful retry backoff instead. Terminate 8 stalled thread routines for the async task dispatcher, resolving task execution loss."
+    },
+
+    # Sample 18: Domain 5 (Technical Mentoring) - Lock-free compare-and-swap retry loop starvation and hazard pointers
+    {
+        "raw_asr": "during our systems architecture mentoring on lock free concurrent structures we investigated why tight compare and swap retry loops starve worker threads across thirty two processor cores buy repeatedly failing atomic pointer updates under heavy contention wait switch to hazard pointer domain reclamation instead uh unbounded retry loops waste memory bus cycles buy spinning continuously on contested memory locations across sixteen c p u cores and delaying r p c worker completions across eight knowed clusters so basically initializ twenty four hazard pointer slots buy publishing thread memory references wait change that to epoch based reclamation instead um please deduplicat eight pointer verification passes four concurrent queue writers inside hazard underscore pointer dot rs eliminating memory reclamation hazards you know",
+        "refined_text": "During our systems architecture mentoring on lock-free concurrent structures, we investigated why tight compare-and-swap retry loops starve worker threads across 32 processor cores by repeatedly failing atomic pointer updates under heavy contention, switching to hazard pointer domain reclamation instead. Unbounded retry loops waste memory bus cycles by spinning continuously on contested memory locations across 16 CPU cores and delaying RPC worker completions across 8 node clusters.\n\nInitialize 24 hazard pointer slots by publishing thread memory references, changing that to epoch-based reclamation instead. Deduplicate 8 pointer verification passes for concurrent queue writers inside hazard_pointer.rs, eliminating memory reclamation hazards."
+    },
+
+    # Sample 19: Domain 3 (PR Review) - TLS handshake timeout and socket descriptor exhaustion
+    {
+        "raw_asr": "in this pull request review on tls underscore transport dot py slow cryptographic handshakes exhaust file descriptor limits across twenty four proxy workers buy keeping unauthenticated socket connections open indefinitely wait switch to aggressive handshake timeouts instead uh slow tls handshakes consume socket table slots buy blocking pending connection handoffs across sixteen post gres database tunnels and degrading c p u multiplexing efficiency across eight cluster knowed endpoints so basically terminat stalled handshake sessions buy aborting incomplete ssl handshakes after three seconds wait change that to five seconds instead um please configur twelve secure transport pools four the a sink i o network engine resolving socket descriptor exhaustion you know",
+        "refined_text": "In this pull request review on tls_transport.py, slow cryptographic handshakes exhaust file descriptor limits across 24 proxy workers by keeping unauthenticated socket connections open indefinitely, switching to aggressive handshake timeouts instead. Slow TLS handshakes consume socket table slots by blocking pending connection handoffs across 16 Postgres database tunnels and degrading CPU multiplexing efficiency across 8 cluster node endpoints.\n\nTerminate stalled handshake sessions by aborting incomplete SSL handshakes after 3 seconds, changing that to 5 seconds instead. Configure 12 secure transport pools for the asyncio network engine, resolving socket descriptor exhaustion."
+    },
+
+    # Sample 20: Domain 5 (Technical Mentoring) - Vectorized numeric processing and memory alignment
+    {
+        "raw_asr": "during our technical mentoring session on numeric performance optimization we analyzed why scalar loop calculations bottleneck data transformation pipelines across sixteen worker routines buy failing two vectorize contiguous array iterations wait switch to d m a batch streams instead uh unaligned memory allocations prevent efficient vector loads buy forcing expensive scalar fallback routines across forty r p c batch streams and burning excess c p u cycles across eight knowed cores so basically allocat thirty two byte aligned memory buffers buy applying memory alignment boundaries wait change that to aligned chunk allocations instead um please recalculat batch loop chunk sizes four the array processing pipeline inside vector underscore engine dot c scaling data throughput you know",
+        "refined_text": "During our technical mentoring session on numeric performance optimization, we analyzed why scalar loop calculations bottleneck data transformation pipelines across 16 worker routines by failing to vectorize contiguous array iterations, switching to DMA batch streams instead. Unaligned memory allocations prevent efficient vector loads by forcing expensive scalar fallback routines across 40 RPC batch streams and burning excess CPU cycles across 8 node cores.\n\nAllocate 32 byte aligned memory buffers by applying memory alignment boundaries, changing that to aligned chunk allocations instead. Recalculate batch loop chunk sizes for the array processing pipeline inside vector_engine.c, scaling data throughput."
+    }
+]
+
+print(f"Total samples: {len(samples)}")
+assert len(samples) == 20, f"Expected 20 samples, got {len(samples)}"
+
+tier_counts = {"short": 0, "medium": 0, "long": 0}
+layer_counts = []
+
+for idx, pair in enumerate(samples, 1):
+    raw = pair["raw_asr"]
+    ref = pair["refined_text"]
+
+    # ASCII check
+    raw.encode("ascii")
+    ref.encode("ascii")
+
+    # Leakage check
+    assert raw.strip().lower() not in eval_raws, f"Sample {idx} raw leaked into sft_eval.json!"
+    assert ref.strip() not in eval_refs, f"Sample {idx} ref leaked into sft_eval.json!"
+
+    # Count words
+    words = len(ref.split())
+    nl = get_noise_layer_count(raw)
+    layer_counts.append(nl)
+
+    # Validate pair
+    min_layers = 3 if words < 25 else 4
+    val_ok, val_reason = validate_pair(pair, min_noise_layers=min_layers)
+    assert val_ok, f"Sample {idx} (words={words}) failed validate_pair: {val_reason}"
+
+    # Cleaner check
+    clean_obj, clean_reason = clean_sample(raw, ref)
+    assert clean_obj is not None, f"Sample {idx} failed clean_sample: {clean_reason}"
+    assert clean_reason == "kept", f"Sample {idx} clean status: {clean_reason}"
+
+    # Tier invariants
+    if words < 25:
+        tier_counts["short"] += 1
+        assert "\n" not in ref, f"Sample {idx} has newline in short tier!"
+        assert nl >= 3, f"Sample {idx} short tier active layers < 3 ({nl})"
+    elif words < 90:
+        tier_counts["medium"] += 1
+        assert nl >= 4, f"Sample {idx} medium tier active layers < 4 ({nl})"
+    else:
+        tier_counts["long"] += 1
+        assert "\n\n" in ref, f"Sample {idx} missing paragraph break in long tier!"
+        assert nl >= 4, f"Sample {idx} long tier active layers < 4 ({nl})"
+
+    active_layers = count_active_noise_layers(raw)
+    active_names = [k for k, v in active_layers.items() if v]
+    print(f"Sample {idx:02d}: words={words:3d}, layers={nl}/6 ({', '.join(active_names)}) - PASSED")
+
+# Batch validation
+batch_ok, batch_reason, batch_stats = validate_batch(
+    samples,
+    min_short=4,
+    min_medium=6,
+    min_long=10,
+    min_noise_layers=4
+)
+assert batch_ok, f"Batch validation failed: {batch_reason}"
+
+avg_layers = sum(layer_counts) / len(layer_counts)
+print("\n" + "="*50)
+print("ALL 20 SAMPLES PASSED STRICT VALIDATION & CLEANER!")
+print(f"Tier counts: {tier_counts}")
+print(f"Average noise layers: {avg_layers:.2f}")
+print(f"Noise layer distribution: {batch_stats.get('noise_layer_distribution')}")
+print("="*50)
+
+# Save to scratch/subagent_batch_193.json
+output_file = Path("scratch/subagent_batch_193.json")
+with open(output_file, "w", encoding="utf-8") as f:
+    json.dump(samples, f, indent=2, ensure_ascii=False)
+
+print(f"\nSaved {len(samples)} pairs to {output_file}")

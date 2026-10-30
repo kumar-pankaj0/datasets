@@ -1,0 +1,159 @@
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath("code"))
+import validator
+import cleaner
+
+samples = [
+    # --- SHORT TIER (Samples 1-4: < 25 words, exactly 1 sentence, 0 newlines, max 1 cut-word) ---
+    {
+        "raw_asr": "basically synchronizat of partition consumer offsets buy inspecting commit underscore interval across the r p c broker channel instead",
+        "refined_text": "Synchronize partition consumer offsets by inspecting commit_interval across the RPC broker channel instead."
+    },
+    {
+        "raw_asr": "um recalculat table buffer sizes buy updating flush underscore interval during a sink aggregation processing instead",
+        "refined_text": "Recalculate table buffer sizes by updating flush_interval during async aggregation processing instead."
+    },
+    {
+        "raw_asr": "basically allocat four bookkeeper journal buffers buy setting ledger underscore cache instead four c p u dispatching",
+        "refined_text": "Allocate 4 bookkeeper journal buffers by setting ledger_cache instead for CPU dispatching."
+    },
+    {
+        "raw_asr": "um terminat stalled ingestion consumers buy tracking segment underscore seal across the r p c controller instead",
+        "refined_text": "Terminate stalled ingestion consumers by tracking segment_seal across the RPC controller instead."
+    },
+
+    # --- MEDIUM TIER (Samples 5-10: 25-89 words, 1-3 sentences, 1 paragraph break) ---
+    {
+        "raw_asr": "basically our beam streaming pipeline stalled window aggregation when six worker tasks wait twelve worker tasks instead saturated memory allocat across knowed executors you know stream platform operators restored window processing buy passing dash dash max bundle size into worker configur profiles buy caching intermediate bundles in slash var slash beam directories while platform engineers inspect r p c query throughput",
+        "refined_text": "Our Beam streaming pipeline stalled window aggregation when 12 worker tasks instead saturated memory allocation across node executors.\n\nStream platform operators restored window processing by passing --max-bundle-size into worker configuration profiles by caching intermediate bundles in /var/beam directories while platform engineers inspect RPC query throughput."
+    },
+    {
+        "raw_asr": "um our vector streaming topology suffered ingestion backpressure when four stream sinks wait eight stream sinks instead dropped socket event communicat across knowed instances uh site reliability engineers stabilized log routing buy passing dash dash pipeline workers into daemon configur parameters buy spooling uncompressed event batches in slash var slash log slash vector directories while developers right a sink metric counters monitoring c p u load",
+        "refined_text": "Our Vector streaming topology suffered ingestion backpressure when 8 stream sinks instead dropped socket event communication across node instances.\n\nSite reliability engineers stabilized log routing by passing --pipeline-workers into daemon configuration parameters by spooling uncompressed event batches in /var/log/vector directories while developers write async metric counters monitoring CPU load."
+    },
+    {
+        "raw_asr": "basically our arroyo streaming pipeline stalled state checkpointing when five join operators wait ten join operators instead failed barrier synchronizat across knowed workers you know distributed systems engineers restored checkpoint throughput buy passing dash dash checkpoint interval sec into pipeline configur options buy storing state snapshots in slash var slash data slash arroyo directories while operators inspect operator underscore epoch buy checking r p c heartbeat replies",
+        "refined_text": "Our Arroyo streaming pipeline stalled state checkpointing when 10 join operators instead failed barrier synchronization across node workers.\n\nDistributed systems engineers restored checkpoint throughput by passing --checkpoint-interval-sec into pipeline configuration options by storing state snapshots in /var/data/arroyo directories while operators inspect operator_epoch by checking RPC heartbeat replies."
+    },
+    {
+        "raw_asr": "um our hudi stream ingestion pipeline failed log compaction when eight file groups wait sixteen file groups instead exceeded heap allocat across knowed executors uh data lake architects unblocked table compaction buy passing dash dash hoodie compact inline into connector configur settings buy writing base parquet files in slash var slash hudi slash warehouse directories while developers monitor commit underscore instant buy evaluating d m a queue latencies",
+        "refined_text": "Our Hudi stream ingestion pipeline failed log compaction when 16 file groups instead exceeded heap allocation across node executors.\n\nData lake architects unblocked table compaction by passing --hoodie-compact-inline into connector configuration settings by writing base Parquet files in /var/hudi/warehouse directories while developers monitor commit_instant by evaluating DMA queue latencies."
+    },
+    {
+        "raw_asr": "basically our hazelcast jet event stream halted partition processing when six streaming jobs wait twelve streaming jobs instead dropped cluster communicat across knowed members you know streaming infrastructure engineers stabilized partition execution buy passing dash dash jet backup count into member configur files buy buffering state snapshots in slash opt slash hazelcast slash state directories while operators right two c p u monitoring threads four a sink health tracking",
+        "refined_text": "Our Hazelcast Jet event stream halted partition processing when 12 streaming jobs instead dropped cluster communication across node members.\n\nStreaming infrastructure engineers stabilized partition execution by passing --jet-backup-count into member configuration files by buffering state snapshots in /opt/hazelcast/state directories while operators write 2 CPU monitoring threads for async health tracking."
+    },
+    {
+        "raw_asr": "um our debezium change capture connector experienced snapshot timeouts when ten table partitions wait twenty table partitions instead failed wal segment synchronizat across knowed workers uh database reliability engineers restored table ingestion buy passing dash dash snapshot fetch size into engine configur options buy persisting schema history in slash var slash cdc slash schema directories while administrators deduplicat change underscore event records buy inspecting post gres replication slots",
+        "refined_text": "Our Debezium change capture connector experienced snapshot timeouts when 20 table partitions instead failed WAL segment synchronization across node workers.\n\nDatabase reliability engineers restored table ingestion by passing --snapshot-fetch-size into engine configuration options by persisting schema history in /var/cdc/schema directories while administrators deduplicate change_event records by inspecting Postgres replication slots."
+    },
+
+    # --- LONG TIER (Samples 11-20: 90+ words, multi-paragraph, spoken engineer narration) ---
+    {
+        "raw_asr": "basically during high concurrency batch ingestion our clickhouse distributed cluster experienced heavy insertion lag across twelve storage knowed instances wait twenty four storage knowed instances instead buy saturating zookeeper coordination queues um distributed table write threads failed partition communicat when incoming ingestion bursts reached thirty megabytes per second post gres staging catalogs accumulated forty gigabytes behind while streaming loader workers dropped socket connections buy triggering critical ingestion pipeline delays database platform engineers mitigated coordination bottlenecks buy passing dash dash max insert block size into server configur parameters buy persisting distributed buffer files inside slash var slash lib slash clickhouse directories operators eliminated replica sync stalls buy tracking part underscore mutation underscore id while developers right two c p u performance monitors evaluating r p c merge latency across all analytical shards",
+        "refined_text": "During high-concurrency batch ingestion, our ClickHouse distributed cluster experienced heavy insertion lag across 24 storage node instances instead by saturating ZooKeeper coordination queues. Distributed table write threads failed partition communication when incoming ingestion bursts reached 30 megabytes per second. Postgres staging catalogs accumulated 40 gigabytes behind while streaming loader workers dropped socket connections by triggering critical ingestion pipeline delays.\n\nDatabase platform engineers mitigated coordination bottlenecks by passing --max-insert-block-size into server configuration parameters by persisting distributed buffer files inside /var/lib/clickhouse directories.\n\nOperators eliminated replica sync stalls by tracking part_mutation_id while developers write 2 CPU performance monitors evaluating RPC merge latency across all analytical shards."
+    },
+    {
+        "raw_asr": "um during a cross region network failover our pulsar message cluster suffered broker ledger rollover stalls across eight broker knowed instances wait sixteen broker knowed instances instead buy exhausting bookkeeper journal write pools basically broker dispatch threads failed ledger synchronizat when replicated message throughput reached fifty thousand messages per second bookkeeper journal disk volumes accumulated sixty gigabytes behind while streaming consumers timed out on partition acknowledgement r p c requests buy causing severe replication lag distributed messaging engineers stabilized ledger rollover buy passing dash dash bookkeeper ensemble size into broker configur parameters buy streaming journal segment files in slash var slash log slash pulsar directories operators resolved ledger rollover deadlocks buy checking ledger underscore entry underscore id while platform engineers right three c p u telemetry probes tracking d m a buffer throughput across all storage bookies",
+        "refined_text": "During a cross-region network failover, our Pulsar message cluster suffered broker ledger rollover stalls across 16 broker node instances instead by exhausting BookKeeper journal write pools. Broker dispatch threads failed ledger synchronization when replicated message throughput reached 50000 messages per second. BookKeeper journal disk volumes accumulated 60 gigabytes behind while streaming consumers timed out on partition acknowledgement RPC requests by causing severe replication lag.\n\nDistributed messaging engineers stabilized ledger rollover by passing --bookkeeper-ensemble-size into broker configuration parameters by streaming journal segment files in /var/log/pulsar directories.\n\nOperators resolved ledger rollover deadlocks by checking ledger_entry_id while platform engineers write 3 CPU telemetry probes tracking DMA buffer throughput across all storage bookies."
+    },
+    {
+        "raw_asr": "basically during high traffic event stream spikes our kafka consumer cluster encountered prolonged partition rebalance storms across ten worker knowed instances wait twenty worker knowed instances instead buy exceeding heartbeat session timeouts um partition assignor threads failed consumer communicat when heartbeats dropped buy thirty seconds group coordinator memory buffers accumulated fifty gigabytes behind while upstream stream producers dropped socket batches buy triggering severe event ingestion delays messaging platform architects eliminated rebalance cascading buy passing dash dash max poll interval ms into client configur settings buy persisting offset commit caches inside slash var slash log slash kafka directories operators resolved assignment thrashing buy checking consumer underscore member underscore id while site reliability engineers right two c p u load monitors evaluating r p c response latencies across all broker partitions",
+        "refined_text": "During high-traffic event stream spikes, our Kafka consumer cluster encountered prolonged partition rebalance storms across 20 worker node instances instead by exceeding heartbeat session timeouts. Partition assignor threads failed consumer communication when heartbeats dropped by 30 seconds. Group coordinator memory buffers accumulated 50 gigabytes behind while upstream stream producers dropped socket batches by triggering severe event ingestion delays.\n\nMessaging platform architects eliminated rebalance cascading by passing --max-poll-interval-ms into client configuration settings by persisting offset commit caches inside /var/log/kafka directories.\n\nOperators resolved assignment thrashing by checking consumer_member_id while site reliability engineers write 2 CPU load monitors evaluating RPC response latencies across all broker partitions."
+    },
+    {
+        "raw_asr": "um during an upstream data drift incident our beam streaming pipeline suffered severe watermark skew across twelve execution knowed instances wait twenty four execution knowed instances instead buy delaying late event window aggregation basically stateful transformation operators failed watermark synchronizat when out of order event bursts reached forty thousand events per second flink taskmanager memory pools accumulated seventy gigabytes behind while downstream message queues paused partition consumption buy triggering end two end pipeline latency stream processing engineers stabilized event time progression buy passing dash dash checkpointing timeout into runner configur parameters buy storing savepoint state tables inside slash opt slash beam slash state directories operators resolved watermark stalling buy tracking window underscore watermark underscore id while developers right four c p u telemetry probes measuring a sink event latency across all worker operators",
+        "refined_text": "During an upstream data drift incident, our Beam streaming pipeline suffered severe watermark skew across 24 execution node instances instead by delaying late event window aggregation. Stateful transformation operators failed watermark synchronization when out-of-order event bursts reached 40000 events per second. Flink TaskManager memory pools accumulated 70 gigabytes behind while downstream message queues paused partition consumption by triggering end-to-end pipeline latency.\n\nStream processing engineers stabilized event-time progression by passing --checkpointing-timeout into runner configuration parameters by storing savepoint state tables inside /opt/beam/state directories.\n\nOperators resolved watermark stalling by tracking window_watermark_id while developers write 4 CPU telemetry probes measuring async event latency across all worker operators."
+    },
+    {
+        "raw_asr": "basically during high volume streaming merge operations our delta lake processing cluster encountered heavy micro batch degradation across eight worker knowed instances wait sixteen worker knowed instances instead buy exhausting rocksdb state store memory um stateful stream deduplication operators failed memory allocat when continuous delta upserts generated sixty thousand mutation records per minute executor scratch disk directories accumulated eighty gigabytes behind while streaming source connectors timed out on socket commit requests buy causing upstream ingestion stalls data lake infrastructure engineers mitigated micro batch degradation buy passing dash dash delta max records per batch into engine configur options buy persisting delta checkpoint metadata inside slash delta slash storage directories operators resolved rocksdb disk spilling buy setting partition underscore commit underscore id while system architects right three d m a buffer monitors evaluating r p c write latency across all delta log tables",
+        "refined_text": "During high-volume streaming merge operations, our Delta Lake processing cluster encountered heavy micro-batch degradation across 16 worker node instances instead by exhausting RocksDB state store memory. Stateful stream deduplication operators failed memory allocation when continuous delta upserts generated 60000 mutation records per minute. Executor scratch disk directories accumulated 80 gigabytes behind while streaming source connectors timed out on socket commit requests by causing upstream ingestion stalls.\n\nData lake infrastructure engineers mitigated micro-batch degradation by passing --delta-max-records-per-batch into engine configuration options by persisting delta checkpoint metadata inside /delta/storage directories.\n\nOperators resolved RocksDB disk spilling by setting partition_commit_id while system architects write 3 DMA buffer monitors evaluating RPC write latency across all Delta log tables."
+    },
+    {
+        "raw_asr": "um during continuous sensor stream ingestion our pinot realtime analytics cluster experienced severe segment build stalls across six server knowed instances wait twelve server knowed instances instead buy saturating mutable segment memory buffers basically realtime segment completion threads failed storage allocat when ingested event streams reached forty five thousand records per second pinot server segment directories accumulated fifty gigabytes behind while ingestion consumer tasks timed out on segment seal notifications buy triggering query latency spikes distributed analytics engineers resolved segment build stalls buy passing dash dash realtime table size limit into server configur files buy spooling committed segment archives inside slash opt slash pinot slash data directories operators eliminated segment commit deadlocks buy checking segment underscore partition underscore id while platform developers right two c p u health probes monitoring r p c query throughput across all realtime tables",
+        "refined_text": "During continuous sensor stream ingestion, our Pinot realtime analytics cluster experienced severe segment build stalls across 12 server node instances instead by saturating mutable segment memory buffers. Realtime segment completion threads failed storage allocation when ingested event streams reached 45000 records per second. Pinot server segment directories accumulated 50 gigabytes behind while ingestion consumer tasks timed out on segment seal notifications by triggering query latency spikes.\n\nDistributed analytics engineers resolved segment build stalls by passing --realtime-table-size-limit into server configuration files by spooling committed segment archives inside /opt/pinot/data directories.\n\nOperators eliminated segment commit deadlocks by checking segment_partition_id while platform developers write 2 CPU health probes monitoring RPC query throughput across all realtime tables."
+    },
+    {
+        "raw_asr": "basically during high throughput financial transaction processing our pathway streaming engine suffered worker memory fragmentation across eight execution knowed instances wait sixteen execution knowed instances instead buy exhausting indexing cache slots um reactive stateful join operators failed partition synchronizat when incoming bid ask price updates reached seventy thousand transactions per second pathway worker cache tables accumulated thirty gigabytes behind while streaming output handlers encountered socket buffer full warnings buy causing transaction publishing backpressure stream processing engineers stabilized reactive stream joins buy passing dash dash join table cache mb into worker configur profiles buy persisting join table index files in slash var slash lib slash pathway directories operators eliminated worker indexing stalls buy tracking table underscore join underscore id while site reliability engineers right three c p u performance monitors evaluating a sink join throughput across all financial streams",
+        "refined_text": "During high-throughput financial transaction processing, our Pathway streaming engine suffered worker memory fragmentation across 16 execution node instances instead by exhausting indexing cache slots. Reactive stateful join operators failed partition synchronization when incoming bid-ask price updates reached 70000 transactions per second. Pathway worker cache tables accumulated 30 gigabytes behind while streaming output handlers encountered socket buffer full warnings by causing transaction publishing backpressure.\n\nStream processing engineers stabilized reactive stream joins by passing --join-table-cache-mb into worker configuration profiles by persisting join table index files in /var/lib/pathway directories.\n\nOperators eliminated worker indexing stalls by tracking table_join_id while site reliability engineers write 3 CPU performance monitors evaluating async join throughput across all financial streams."
+    },
+    {
+        "raw_asr": "um during rapid micro batch event ingestion our starrocks analytical cluster encountered severe tablet version explosion across twelve backend knowed instances wait twenty four backend knowed instances instead buy accumulating uncompacted rowset metadata basically tablet compaction threads failed metadata communicat when concurrent stream load requests exceeded five hundred batches per minute starrocks tablet metadata directories accumulated forty gigabytes behind while ingestion client processes timed out on stream load transaction commits buy triggering analytical pipeline delays big data platform engineers prevented tablet version exhaustion buy passing dash dash stream load max batch into backend configur parameters buy storing compacted tablet storage in slash var slash starrocks slash storage directories operators resolved compaction queue backlogs buy tracking tablet underscore version underscore id while developers right four d m a memory probes measuring r p c compaction latencies across all backend tablets",
+        "refined_text": "During rapid micro-batch event ingestion, our StarRocks analytical cluster encountered severe tablet version explosion across 24 backend node instances instead by accumulating uncompacted rowset metadata. Tablet compaction threads failed metadata communication when concurrent stream load requests exceeded 500 batches per minute. StarRocks tablet metadata directories accumulated 40 gigabytes behind while ingestion client processes timed out on stream load transaction commits by triggering analytical pipeline delays.\n\nBig data platform engineers prevented tablet version exhaustion by passing --stream-load-max-batch into backend configuration parameters by storing compacted tablet storage in /var/starrocks/storage directories.\n\nOperators resolved compaction queue backlogs by tracking tablet_version_id while developers write 4 DMA memory probes measuring RPC compaction latencies across all backend tablets."
+    },
+    {
+        "raw_asr": "basically during a downstream network degradation event our vector telemetry pipeline encountered critical sink buffer saturation across ten aggregator knowed instances wait twenty aggregator knowed instances instead buy exceeding in memory queue limits um vector sink dispatch workers failed buffer allocat when network packet drop rates climbed past thirty percent on outbound socket streams aggregator disk buffer pools accumulated fifty gigabytes behind while upstream log shipper daemons paused telemetry forwarding buy causing widespread pipeline backpressure observability platform engineers mitigated buffer exhaustion buy passing dash dash disk buffer max size into pipeline configur settings buy spooling encrypted telemetry batches inside slash var slash log slash vector directories operators resolved buffer spillover stalls buy tracking buffer underscore queue underscore id while site reliability engineers right two c p u telemetry gauges monitoring a sink network transfer rates across all aggregator nodes",
+        "refined_text": "During a downstream network degradation event, our Vector telemetry pipeline encountered critical sink buffer saturation across 20 aggregator node instances instead by exceeding in-memory queue limits. Vector sink dispatch workers failed buffer allocation when network packet drop rates climbed past 30 percent on outbound socket streams. Aggregator disk buffer pools accumulated 50 gigabytes behind while upstream log shipper daemons paused telemetry forwarding by causing widespread pipeline backpressure.\n\nObservability platform engineers mitigated buffer exhaustion by passing --disk-buffer-max-size into pipeline configuration settings by spooling encrypted telemetry batches inside /var/log/vector directories.\n\nOperators resolved buffer spillover stalls by tracking buffer_queue_id while site reliability engineers write 2 CPU telemetry gauges monitoring async network transfer rates across all aggregator nodes."
+    },
+    {
+        "raw_asr": "um during a database replica maintenance window our debezium change capture connector suffered change stream resume failures across six worker knowed instances wait twelve worker knowed instances instead buy dropping oplog resume tokens basically the c d c capture coordinator failed event synchronizat when transaction oplog rollover exceeded forty minutes on database clusters connector state checkpoint tables accumulated sixty gigabytes behind while streaming consumer services timed out on uncommitted r p c batches buy triggering downstream data synchronization delays data platform engineers restored c d c capture continuity buy passing dash dash capture pipeline batch size into engine configur options buy persisting change stream metadata inside slash opt slash debezium slash checkpoints directories operators resolved token expiration stalls buy checking resume underscore token underscore id while developers right three c p u health probes tracking post gres catalog state across all replica members",
+        "refined_text": "During a database replica maintenance window, our Debezium change capture connector suffered change stream resume failures across 12 worker node instances instead by dropping oplog resume tokens. The CDC capture coordinator failed event synchronization when transaction oplog rollover exceeded 40 minutes on database clusters. Connector state checkpoint tables accumulated 60 gigabytes behind while streaming consumer services timed out on uncommitted RPC batches by triggering downstream data synchronization delays.\n\nData platform engineers restored CDC capture continuity by passing --capture-pipeline-batch-size into engine configuration options by persisting change stream metadata inside /opt/debezium/checkpoints directories.\n\nOperators resolved token expiration stalls by checking resume_token_id while developers write 3 CPU health probes tracking Postgres catalog state across all replica members."
+    }
+]
+
+print(f"Total samples: {len(samples)}")
+
+# Check eval leakage
+with open("sft_eval.json", "r") as f:
+    eval_data = json.load(f)
+eval_targets = {item["refined_text"].strip().lower() for item in eval_data}
+
+leakage_count = 0
+for idx, s in enumerate(samples):
+    ref = s["refined_text"].strip().lower()
+    if ref in eval_targets:
+        print(f"Leakage detected in sample {idx+1}!")
+        leakage_count += 1
+if leakage_count == 0:
+    print("Zero eval leakage confirmed.")
+
+# Validate pairs and cleaner
+tier_counts = {"short": 0, "medium": 0, "long": 0}
+layer_counts = []
+for idx, s in enumerate(samples):
+    raw = s["raw_asr"]
+    ref = s["refined_text"]
+    words = len(ref.split())
+    if words < 25:
+        tier = "short"
+        tier_counts["short"] += 1
+        min_layers = 3
+    elif words < 90:
+        tier = "medium"
+        tier_counts["medium"] += 1
+        min_layers = 4
+    else:
+        tier = "long"
+        tier_counts["long"] += 1
+        min_layers = 4
+
+    layers = validator.get_noise_layer_count(raw)
+    layer_counts.append(layers)
+    active_layers = validator.count_active_noise_layers(raw)
+
+    ok, err = validator.validate_pair(s, min_noise_layers=min_layers)
+    if not ok:
+        print(f"Sample {idx+1} ({tier}, {words} words) VALIDATOR FAIL: {err}")
+    
+    clean_res, clean_status = cleaner.clean_sample(raw, ref)
+    if clean_status != "kept":
+        print(f"Sample {idx+1} ({tier}, {words} words) CLEANER FAIL: {clean_status}")
+
+    print(f"Sample {idx+1:02d} [{tier.upper():6s}] {words:3d} words, {layers} layers {active_layers} | Val: {ok} | Clean: {clean_status}")
+
+print(f"\nTier summary: {tier_counts}")
+print(f"Average noise layers: {sum(layer_counts)/len(layer_counts):.2f}")
+
+# Batch validation
+b_ok, b_msg, b_stats = validator.validate_batch(samples, min_short=4, min_medium=6, min_long=10, min_noise_layers=4)
+print(f"\nBatch validator: {b_ok} - {b_msg}")
+print(f"Batch stats: {b_stats}")
+
+if b_ok and leakage_count == 0:
+    output_path = "scratch/subagent_batch_197.json"
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(samples, f, ensure_ascii=False, indent=2)
+    print(f"\nSuccessfully saved batch to {output_path}")

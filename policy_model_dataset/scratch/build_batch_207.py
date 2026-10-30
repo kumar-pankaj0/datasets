@@ -1,0 +1,157 @@
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath("code"))
+import validator
+import cleaner
+
+samples = [
+    # --- Short Tier (4 samples, < 25 words, exactly 1 sentence, 0 newlines) ---
+    {
+        "raw_asr": "um the stream engineer tunes rocksdb state underscore store allocat four eight c p u workers buy flushing memory instead",
+        "refined_text": "The stream engineer tunes RocksDB state_store allocation for 8 CPU workers by flushing memory instead."
+    },
+    {
+        "raw_asr": "uh kafka partition underscore assignor communicat over r p c minimizes latency four sixteen knowed brokers buy balancing offsets instead",
+        "refined_text": "Kafka partition_assignor communication over RPC minimizes latency for 16 node brokers by balancing offsets instead."
+    },
+    {
+        "raw_asr": "um clickhouse ingestion buffer underscore writer synchronizat handles metric records four twenty four c p u cores buy flushing blocks instead",
+        "refined_text": "ClickHouse ingestion buffer_writer synchronization handles metric records for 24 CPU cores by flushing blocks instead."
+    },
+    {
+        "raw_asr": "uh a sink iceberg manifest underscore builder deduplicat accelerates snapshot metadata four thirty two knowed workers buy pruning files instead",
+        "refined_text": "Async Iceberg manifest_builder deduplication accelerates snapshot metadata for 32 node workers by pruning files instead."
+    },
+
+    # --- Medium Tier (6 samples, 25-89 words, 1-3 sentences, natural \n\n break) ---
+    {
+        "raw_asr": "um the data architect evaluates spark streaming checkpoint underscore manager synchronizat four event streams wait configure rockdb state store instead uh spark streaming executors write delta logs over r p c channels inside checkpoint underscore runner daemons across twenty four c p u workers buy committing atomic transactions",
+        "refined_text": "The data architect evaluates Spark streaming checkpoint_manager synchronization for event streams, configuring RocksDB state store instead.\n\nSpark streaming executors write Delta logs over RPC channels inside checkpoint_runner daemons across 24 CPU workers by committing atomic transactions."
+    },
+    {
+        "raw_asr": "basically technical r f c thirty eight compares redpanda kernel bypass with j v m broker queues four high throughput event ingestion wait switch to redpanda instead uh redpanda storage engines allocate segment blocks over r p c sockets inside raft underscore log daemons across thirty two c p u instances buy communicat without garbage collection pauses",
+        "refined_text": "Technical RFC 38 compares Redpanda kernel bypass with JVM broker queues for high-throughput event ingestion, switching to Redpanda instead.\n\nRedpanda storage engines allocate segment blocks over RPC sockets inside raft_log daemons across 32 CPU instances by communication without garbage collection pauses."
+    },
+    {
+        "raw_asr": "um the data platform team assesses post gres wal streaming against batch polling four real time table capture wait select debezium cdc connectors instead uh debezium worker tasks stream change events over r p c streams inside wal underscore parser daemons across sixteen c p u cores buy synchronizat without database lock contention",
+        "refined_text": "The data platform team assesses Postgres WAL streaming against batch polling for real-time table capture, selecting Debezium CDC connectors instead.\n\nDebezium worker tasks stream change events over RPC streams inside wal_parser daemons across 16 CPU cores by synchronization without database lock contention."
+    },
+    {
+        "raw_asr": "basically architectural decision record forty two evaluates arrow flight streaming against rest payload transport four analytical metrics wait adopt arrow flight endpoints instead uh arrow flight servers transfer columnar record batches over r p c connections inside flight underscore server daemons across twenty eight c p u workers buy communicat without memory allocat overhead",
+        "refined_text": "Architectural Decision Record 42 evaluates Arrow Flight streaming against REST payload transport for analytical metrics, adopting Arrow Flight endpoints instead.\n\nArrow Flight servers transfer columnar record batches over RPC connections inside flight_server daemons across 28 CPU workers by communication without memory allocation overhead."
+    },
+    {
+        "raw_asr": "um the streaming platform team reviews flink aligned checkpoint barriers against unaligned in flight buffers four backpressured pipelines wait deploy unaligned checkpoints instead uh flink task managers persist in flight channel buffers over r p c channels inside channel underscore state daemons across thirty six knowed instances buy synchronizat without barrier alignment delays",
+        "refined_text": "The streaming platform team reviews Flink aligned checkpoint barriers against unaligned in-flight buffers for backpressured pipelines, deploying unaligned checkpoints instead.\n\nFlink task managers persist in-flight channel buffers over RPC channels inside channel_state daemons across 36 node instances by synchronization without barrier alignment delays."
+    },
+    {
+        "raw_asr": "so um technical r f c sixty three assesses kafka transactional producer coordination against at least once consumer deduplication four payment event processing wait adopt transactional producers instead uh transaction coordinator brokers write transaction markers over r p c streams inside txn underscore coordinator tasks across forty c p u workers buy communicat without phantom event replays",
+        "refined_text": "Technical RFC 63 assesses Kafka transactional producer coordination against at-least-once consumer deduplication for payment event processing, adopting transactional producers instead.\n\nTransaction coordinator brokers write transaction markers over RPC streams inside txn_coordinator tasks across 40 CPU workers by communication without phantom event replays."
+    },
+
+    # --- Long Tier (10 samples, 90+ words, multi-paragraph separated by \n\n) ---
+    {
+        "raw_asr": "um our stream processing infrastructure committee evaluated apache flink heap state storage against rocksdb embedded state backends four windowed event aggregations across thirty two taskmanager clusters our legacy heap state backend suffered extensive j v m garbage collection pauses exceeding twelve seconds during heavy sliding window state materialization in addition sudden heap memory spikes triggered out of memory task container evictions across twenty four knowed instances uh technical r f c eighty four adopts the rocksdb state backend with a sink checkpointing buy offloading window state directly to local n v m e storage taskmanager daemons spill s s table blocks to disk synchronizat checkpoint metadata over r p c connections inside state underscore flusher daemons wait switch to r p c connections inside dedicated checkpoint pools instead avoiding memory allocat bottlenecks basically validation benchmarks across forty eight knowed instances confirmed that the rocksdb backend sustained two hundred eighty thousand events per second while reducing p ninety nine checkpoint duration from forty five seconds down into four seconds buy communicat inside state underscore writer tasks across sixteen c p u cores",
+        "refined_text": "Our stream processing infrastructure committee evaluated Apache Flink heap state storage against RocksDB embedded state backends for windowed event aggregations across 32 TaskManager clusters. Our legacy heap state backend suffered extensive JVM garbage collection pauses exceeding 12 seconds during heavy sliding window state materialization. In addition sudden heap memory spikes triggered out of memory task container evictions across 24 node instances.\n\nTechnical RFC 84 adopts the RocksDB state backend with async checkpointing by offloading window state directly to local NVMe storage. TaskManager daemons spill SSTable blocks to disk, synchronizing checkpoint metadata over RPC connections inside state_flusher daemons, switching to RPC connections inside dedicated checkpoint pools instead, avoiding memory allocation bottlenecks.\n\nValidation benchmarks across 48 node instances confirmed that the RocksDB backend sustained 280000 events per second, while reducing P99 checkpoint duration from 45 seconds down into 4 seconds by communication inside state_writer tasks across 16 CPU cores."
+    },
+    {
+        "raw_asr": "um our event streaming reliability team evaluated kafka eager partition rebalancing against the cooperative sticky assignor four large consumer groups across sixty four worker pods our previous eager range assignor revoked all partition assignments during member restarts causing consumer lag spikes and stalling event consumption four twenty eight seconds across thirty two knowed instances in addition revoked partitions triggered consumer heartbeat timeouts uh technical r f c ninety one adopts the cooperative sticky partition assignor buy migrating partitions incrementally without global revocation consumer instances retain active assignments while migrating reallocated partitions over r p c connections inside group underscore coordinator daemons wait switch to r p c connections inside dedicated rebalance pools instead avoiding partition revocation stalls basically production benchmarks across fifty six knowed instances confirmed that consumer groups sustained three hundred forty thousand records per second while reducing rebalance duration from twenty eight seconds down into two seconds buy communicat inside partition underscore assigner tasks across twenty four c p u cores without thread terminat overhead",
+        "refined_text": "Our event streaming reliability team evaluated Kafka eager partition rebalancing against the cooperative sticky assignor for large consumer groups across 64 worker pods. Our previous eager range assignor revoked all partition assignments during member restarts, causing consumer lag spikes and stalling event consumption for 28 seconds across 32 node instances. In addition revoked partitions triggered consumer heartbeat timeouts.\n\nTechnical RFC 91 adopts the cooperative sticky partition assignor by migrating partitions incrementally without global revocation. Consumer instances retain active assignments while migrating reallocated partitions over RPC connections inside group_coordinator daemons, switching to RPC connections inside dedicated rebalance pools instead, avoiding partition revocation stalls.\n\nProduction benchmarks across 56 node instances confirmed that consumer groups sustained 340000 records per second, while reducing rebalance duration from 28 seconds down into 2 seconds by communication inside partition_assigner tasks across 24 CPU cores without thread termination overhead."
+    },
+    {
+        "raw_asr": "um our lakehouse data architecture committee evaluated apache iceberg copy on write against merge on read storage formats four continuous streaming ingestion across thirty six pipelines copy on write mode rewrote complete parquet data files during every record update causing massive write amplification across twenty eight knowed instances in addition continuous parquet rewrites created s three object storage rate limits uh technical r f c ninety eight selects iceberg merge on read format with positional delete files buy writing delta records directly into companion delete files ingestion engines append updates over r p c streams inside manifest underscore committer daemons wait switch to r p c streams inside dedicated commit pools instead resolving file rewrite write amplification basically load testing across forty four knowed instances demonstrated that merge on read format processed one hundred ninety thousand row updates per second lowering p ninety five commit latency from sixty eight seconds down into five seconds buy communicat inside table underscore committer tasks across twenty c p u cores without memory allocat failures",
+        "refined_text": "Our lakehouse data architecture committee evaluated Apache Iceberg copy on write against merge on read storage formats for continuous streaming ingestion across 36 pipelines. Copy on write mode rewrote complete Parquet data files during every record update, causing massive write amplification across 28 node instances. In addition continuous Parquet rewrites created S3 object storage rate limits.\n\nTechnical RFC 98 selects Iceberg merge on read format with positional delete files by writing delta records directly into companion delete files. Ingestion engines append updates over RPC streams inside manifest_committer daemons, switching to RPC streams inside dedicated commit pools instead, resolving file rewrite write amplification.\n\nLoad testing across 44 node instances demonstrated that merge on read format processed 190000 row updates per second, lowering P95 commit latency from 68 seconds down into 5 seconds by communication inside table_committer tasks across 20 CPU cores without memory allocation failures."
+    },
+    {
+        "raw_asr": "um our analytics platform engineering group evaluated spark streaming shuffle hash joins against broadcast dynamic partition pruning four stream dimension lookups across forty eight executor instances shuffled stream joins across high cardinality keys caused network partition skew across thirty two knowed instances during event spikes in addition executor shuffle fetch failures triggered task retry loops uh architectural decision record one hundred five mandates broadcast hash joins with dynamic partition pruning buy distributing dimension tables directly into executor memory driver daemons broadcast table metadata over r p c channels inside broadcast underscore manager daemons wait switch to r p c channels inside dedicated broadcast pools instead avoiding expensive shuffle exchanges basically stress testing across sixty knowed instances verified that spark streaming processed four hundred twenty thousand join events per second lowering p ninety nine join latency from fifty two milliseconds down into six milliseconds buy communicat inside join underscore executor tasks across thirty two c p u threads without thread terminat errors",
+        "refined_text": "Our analytics platform engineering group evaluated Spark streaming shuffle hash joins against broadcast dynamic partition pruning for stream dimension lookups across 48 executor instances. Shuffled stream joins across high-cardinality keys caused network partition skew across 32 node instances during event spikes. In addition executor shuffle fetch failures triggered task retry loops.\n\nArchitectural Decision Record 105 mandates broadcast hash joins with dynamic partition pruning by distributing dimension tables directly into executor memory. Driver daemons broadcast table metadata over RPC channels inside broadcast_manager daemons, switching to RPC channels inside dedicated broadcast pools instead, avoiding expensive shuffle exchanges.\n\nStress testing across 60 node instances verified that Spark streaming processed 420000 join events per second, lowering P99 join latency from 52 milliseconds down into 6 milliseconds by communication inside join_executor tasks across 32 CPU threads without thread termination errors."
+    },
+    {
+        "raw_asr": "um our streaming platform reliability team evaluated consumer socket poll frequency against chunked batch fetching four high volume event ingestion across thirty six streaming pipelines default single byte polling caused extensive network interrupt overhead across forty knowed instances during peak message arrival in addition socket read contention elevated thread context switches uh technical r f c one hundred twelve sets fetch min bytes to six five five three six bytes buy buffering incoming socket records inside network channels consumer poll workers fetch grouped message chunks over r p c streams inside socket underscore channel daemons wait switch to r p c streams inside dedicated buffer pools instead eliminating single record poll overhead basically benchmarks across fifty two knowed instances confirmed that consumer pipelines processed five hundred ten thousand records per second lowering p ninety five fetch latency from forty eight milliseconds down into four milliseconds buy communicat inside buffer underscore poller tasks across twenty eight c p u cores without memory allocat faults",
+        "refined_text": "Our streaming platform reliability team evaluated consumer socket poll frequency against chunked batch fetching for high-volume event ingestion across 36 streaming pipelines. Default single-byte polling caused extensive network interrupt overhead across 40 node instances during peak message arrival. In addition socket read contention elevated thread context switches.\n\nTechnical RFC 112 sets fetch min bytes to 65536 bytes by buffering incoming socket records inside network channels. Consumer poll workers fetch grouped message chunks over RPC streams inside socket_channel daemons, switching to RPC streams inside dedicated buffer pools instead, eliminating single-record poll overhead.\n\nBenchmarks across 52 node instances confirmed that consumer pipelines processed 510000 records per second, lowering P95 fetch latency from 48 milliseconds down into 4 milliseconds by communication inside buffer_poller tasks across 28 CPU cores without memory allocation faults."
+    },
+    {
+        "raw_asr": "um our streaming storage committee evaluated apache hudi synchronous file slicing against a sink timeline compaction four continuous streaming upserts across forty lakehouse pipelines accumulating uncompacted delta log files degraded query scan performance across thirty knowed instances during daily analytical queries in addition small file proliferation created metadata lookup timeouts uh technical r f c one hundred nineteen adopts a sink inline table compaction with bucket indexing buy merging delta commit logs into base parquet slices timeline management daemons execute scheduled compaction plans over r p c streams inside compaction underscore scheduler daemons wait switch to r p c streams inside dedicated compaction pools instead eliminating small file read overhead basically validation benchmarks across forty eight knowed instances demonstrated that hudi sustained two hundred forty thousand record upserts per second reducing p ninety nine read latency from ninety six milliseconds down into nine milliseconds buy synchronizat of file slices inside timeline underscore writer tasks across twenty c p u threads without synchronizat stalls",
+        "refined_text": "Our streaming storage committee evaluated Apache Hudi synchronous file slicing against async timeline compaction for continuous streaming upserts across 40 lakehouse pipelines. Accumulating uncompacted delta log files degraded query scan performance across 30 node instances during daily analytical queries. In addition small file proliferation created metadata lookup timeouts.\n\nTechnical RFC 119 adopts async inline table compaction with bucket indexing by merging delta commit logs into base Parquet slices. Timeline management daemons execute scheduled compaction plans over RPC streams inside compaction_scheduler daemons, switching to RPC streams inside dedicated compaction pools instead, eliminating small file read overhead.\n\nValidation benchmarks across 48 node instances demonstrated that Hudi sustained 240000 record upserts per second, reducing P99 read latency from 96 milliseconds down into 9 milliseconds by synchronization of file slices inside timeline_writer tasks across 20 CPU threads without synchronization stalls."
+    },
+    {
+        "raw_asr": "um our real time fraud telemetry group evaluated processing time sliding windows against bounded event time watermarking four stateful transaction streams across thirty two pipeline jobs processing time windowing dropped late arriving event records during regional network latency spikes across twenty six knowed instances in addition skewed timestamps generated invalid financial aggregations uh architectural decision record one hundred twenty six mandates bounded out of orderness event time watermarks with allowed lateness buy propagating watermarks through dataflow channels watermark generator daemons assign event progress over r p c streams inside watermark underscore assigner daemons wait switch to r p c streams inside dedicated watermark pools instead resolving out of order event drops basically chaos injection tests across fifty knowed instances confirmed that the stream topology processed three hundred sixty thousand transactions per second while maintaining p ninety five window emission latency below eight milliseconds buy communicat inside event underscore window tasks across twenty four c p u cores without memory allocat failures",
+        "refined_text": "Our real-time fraud telemetry group evaluated processing-time sliding windows against bounded event-time watermarking for stateful transaction streams across 32 pipeline jobs. Processing-time windowing dropped late-arriving event records during regional network latency spikes across 26 node instances. In addition skewed timestamps generated invalid financial aggregations.\n\nArchitectural Decision Record 126 mandates bounded-out-of-orderness event-time watermarks with allowed lateness by propagating watermarks through dataflow channels. Watermark generator daemons assign event progress over RPC streams inside watermark_assigner daemons, switching to RPC streams inside dedicated watermark pools instead, resolving out-of-order event drops.\n\nChaos injection tests across 50 node instances confirmed that the stream topology processed 360000 transactions per second, while maintaining P95 window emission latency below 8 milliseconds by communication inside event_window tasks across 24 CPU cores without memory allocation failures."
+    },
+    {
+        "raw_asr": "um our streaming platform reliability group evaluated time based segment deletion against kafka log compaction four stateful changelog topics across forty four streaming pipelines time based segment deletion purged key state updates requiring full table re scans across thirty six knowed instances during consumer restarts in addition broker disk usage expanded rapidly uh technical r f c one hundred thirty four adopts kafka log compaction with a min cleanable ratio of fifty percent buy scanning duplicate keys inside segment blocks log cleaner threads deduplicate tombstone records over r p c sockets inside log underscore cleaner daemons wait switch to r p c sockets inside dedicated cleaner pools instead resolving changelog state loss basically validation testing across forty eight knowed instances confirmed that kafka sustained three hundred ten thousand key updates per second while reducing changelog recovery duration from eighty four seconds down into seven seconds buy communicat inside segment underscore cleaner tasks across eighteen c p u cores without thread terminat faults",
+        "refined_text": "Our streaming platform reliability group evaluated time-based segment deletion against Kafka log compaction for stateful changelog topics across 44 streaming pipelines. Time-based segment deletion purged key state updates, requiring full table re-scans across 36 node instances during consumer restarts. In addition broker disk usage expanded rapidly.\n\nTechnical RFC 134 adopts Kafka log compaction with a min cleanable ratio of 50 percent by scanning duplicate keys inside segment blocks. Log cleaner threads deduplicate tombstone records over RPC sockets inside log_cleaner daemons, switching to RPC sockets inside dedicated cleaner pools instead, resolving changelog state loss.\n\nValidation testing across 48 node instances confirmed that Kafka sustained 310000 key updates per second, while reducing changelog recovery duration from 84 seconds down into 7 seconds by communication inside segment_cleaner tasks across 18 CPU cores without thread termination faults."
+    },
+    {
+        "raw_asr": "um our real time routing architecture group evaluated remote cache lookups against flink broadcast state four dynamic routing decisions across twenty eight streaming topologies synchronous cache lookups caused network latency spikes and connection timeouts across thirty two knowed instances during traffic surges in addition cache network bottlenecks throttled event throughput uh technical r f c one hundred forty one mandates flink broadcast state patterns buy replicating rule configurations directly into operator memory control plane daemons broadcast state records over r p c streams inside rule underscore dispatcher daemons wait switch to r p c streams inside dedicated broadcast pools instead eliminating remote database lookup overhead basically benchmark testing across forty six knowed instances demonstrated that the pipeline processed three hundred ninety thousand events per second lowering p ninety nine rule evaluation latency from seventy six milliseconds down into three milliseconds buy synchronizat of broadcast rules inside rule underscore evaluator tasks across twenty two c p u threads without synchronizat stalls",
+        "refined_text": "Our real-time routing architecture group evaluated remote cache lookups against Flink broadcast state for dynamic routing decisions across 28 streaming topologies. Synchronous cache lookups caused network latency spikes and connection timeouts across 32 node instances during traffic surges. In addition cache network bottlenecks throttled event throughput.\n\nTechnical RFC 141 mandates Flink broadcast state patterns by replicating rule configurations directly into operator memory. Control plane daemons broadcast state records over RPC streams inside rule_dispatcher daemons, switching to RPC streams inside dedicated broadcast pools instead, eliminating remote database lookup overhead.\n\nBenchmark testing across 46 node instances demonstrated that the pipeline processed 390000 events per second, lowering P99 rule evaluation latency from 76 milliseconds down into 3 milliseconds by synchronization of broadcast rules inside rule_evaluator tasks across 22 CPU threads without synchronization stalls."
+    },
+    {
+        "raw_asr": "um our distributed streaming platform committee evaluated h d f s backed state store providers against rocksdb state store providers four stateful spark streaming queries across thirty two applications the default h d f s state store provider suffered extensive j v m heap pressure causing eighteen second garbage collection pauses across thirty six knowed instances during high cardinality key processing in addition executor container failures triggered query aborts uh technical r f c one hundred forty eight mandates the rocksdb state store provider with native memory allocat buy persisting state partitions directly to local n v m e drives spark streaming executors write s s t files over r p c channels inside state underscore provider daemons wait switch to r p c channels inside dedicated state pools instead resolving heap memory starvation basically validation benchmarks across fifty four knowed instances confirmed that spark streaming sustained four hundred sixty thousand stateful updates per second lowering p ninety five state commit latency from sixty two milliseconds down into five milliseconds buy communicat inside state underscore committer tasks across twenty eight c p u cores without memory allocat failures",
+        "refined_text": "Our distributed streaming platform committee evaluated HDFS backed state store providers against RocksDB state store providers for stateful Spark streaming queries across 32 applications. The default HDFS state store provider suffered extensive JVM heap pressure, causing 18 second garbage collection pauses across 36 node instances during high-cardinality key processing. In addition executor container failures triggered query aborts.\n\nTechnical RFC 148 mandates the RocksDB state store provider with native memory allocation by persisting state partitions directly to local NVMe drives. Spark streaming executors write SST files over RPC channels inside state_provider daemons, switching to RPC channels inside dedicated state pools instead, resolving heap memory starvation.\n\nValidation benchmarks across 54 node instances confirmed that Spark streaming sustained 460000 stateful updates per second, lowering P95 state commit latency from 62 milliseconds down into 5 milliseconds by communication inside state_committer tasks across 28 CPU cores without memory allocation failures."
+    }
+]
+
+# Run validation
+with open("sft_eval.json", "r") as f:
+    eval_data = json.load(f)
+eval_targets = {item["refined_text"].strip().lower() for item in eval_data}
+
+b_short, b_medium, b_long = 0, 0, 0
+total_layers = 0
+
+print(f"Total samples: {len(samples)}")
+for idx, s in enumerate(samples):
+    raw = s["raw_asr"]
+    ref = s["refined_text"]
+    words = len(ref.split())
+    
+    if words < 25:
+        tier = "SHORT"
+        b_short += 1
+        min_layers = 3
+    elif words < 90:
+        tier = "MEDIUM"
+        b_medium += 1
+        min_layers = 4
+    else:
+        tier = "LONG"
+        b_long += 1
+        min_layers = 4
+        
+    v_ok, v_err = validator.validate_pair(s, min_noise_layers=min_layers)
+    if not v_ok:
+        print(f"FAILED validator on sample {idx+1}: {v_err}")
+        sys.exit(1)
+        
+    res, status = cleaner.clean_sample(raw, ref)
+    if status != "kept":
+        print(f"FAILED cleaner on sample {idx+1}: {status}")
+        sys.exit(1)
+        
+    if ref.strip().lower() in eval_targets:
+        print(f"FAILED leakage check on sample {idx+1}")
+        sys.exit(1)
+        
+    layers = validator.get_noise_layer_count(raw)
+    total_layers += layers
+    print(f"Sample {idx+1:02d} [{tier}]: {words} words, {layers} layers - PASSED")
+
+avg_layers = total_layers / len(samples)
+print(f"\nTiers: Short={b_short}, Medium={b_medium}, Long={b_long}")
+print(f"Avg active noise layers: {avg_layers:.2f}")
+
+# Validate batch
+b_ok, b_msg, b_stats = validator.validate_batch(samples, min_short=4, min_medium=6, min_long=10, min_noise_layers=3)
+print(f"validate_batch: {b_ok} ({b_msg})")
+if not b_ok:
+    sys.exit(1)
+
+# Write to scratch/subagent_batch_207.json
+target_file = "scratch/subagent_batch_207.json"
+with open(target_file, "w", encoding="utf-8") as f:
+    json.dump(samples, f, indent=2, ensure_ascii=False)
+
+print(f"\nSaved {len(samples)} samples to {target_file}")

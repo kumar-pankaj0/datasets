@@ -1,0 +1,195 @@
+import json
+import sys
+import os
+from pathlib import Path
+
+# Add code directory to path
+sys.path.insert(0, os.path.abspath("code"))
+
+from validator import validate_pair, validate_batch
+from cleaner import clean_sample
+
+batch = [
+    # =========================================================================
+    # Tier 1: Short Utterances (< 25 words) - Exactly 4 samples (Samples 1-4)
+    # Exactly 1 grammatically complete sentence. Zero newlines. Max 1 cut-word.
+    # Content words >= 11-13. Rationale with "by <action>". No decimals, no dotted filenames.
+    # =========================================================================
+
+    # Sample 1: Semantic cache lookup threshold
+    {
+        "raw_asr": "um optimiz semantic cache lookups buy checking vector similarity against an exact match threshold across eighty dimensions",
+        "refined_text": "Optimize semantic cache lookups by checking vector similarity against an exact match threshold across 80 dimensions."
+    },
+
+    # Sample 2: Pydantic tool argument schema validation
+    {
+        "raw_asr": "uh validat agent tool arguments buy parsing incoming structured payload dictionaries through pydantic schema classes",
+        "refined_text": "Validate agent tool arguments by parsing incoming structured payload dictionaries through Pydantic schema classes."
+    },
+
+    # Sample 3: Context buffer compaction token pruning
+    {
+        "raw_asr": "basically truncat conversation context buffers buy evicting stale message records older than fourteen dialogue turns",
+        "refined_text": "Truncate conversation context buffers by evicting stale message records older than 14 dialogue turns."
+    },
+
+    # Sample 4: Tool call iteration recursion limit
+    {
+        "raw_asr": "um terminat recursive agent execution loops buy enforcing a hard ceiling of twelve search tool calls",
+        "refined_text": "Terminate recursive agent execution loops by enforcing a hard ceiling of 12 search tool calls."
+    },
+
+    # =========================================================================
+    # Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples (Samples 5-10)
+    # 1 to 3 grammatically complete sentences. Natural \n\n breaks. Max \n\n: words // 25.
+    # =========================================================================
+
+    # Sample 5: Function calling retry logic with temperature decrement
+    {
+        "raw_asr": "uh configur our function calling retry handler inside schema underscore retry dot py buy parsing malformed json payloads across two retry attempts wait three retry attempts instead buy reducing model sampling temperature basically discard unparseable tool arguments buy returning error diagnostics two the planner um right four unit tests confirming clean schema fallback",
+        "refined_text": "Configure our function calling retry handler inside schema_retry.py by parsing malformed JSON payloads across 3 retry attempts instead by reducing model sampling temperature.\n\nDiscard unparseable tool arguments by returning error diagnostics to the planner. Write 4 unit tests confirming clean schema fallback."
+    },
+
+    # Sample 6: Prompt compression using perplexity pruning
+    {
+        "raw_asr": "um initializ the prompt compression module inside prompt underscore compressor dot py buy filtering low perplexity tokens across conversation history buy removing twenty percent wait thirty percent of prompt tokens instead okay so preserv semantic information buy retaining system instruction blocks um right six unit tests verifying prompt compression ratio",
+        "refined_text": "Initialize the prompt compression module inside prompt_compressor.py by filtering low perplexity tokens across conversation history, removing 30 percent of prompt tokens instead.\n\nPreserve semantic information by retaining system instruction blocks. Write 6 unit tests verifying prompt compression ratio."
+    },
+
+    # Sample 7: Agent scratchpad buffer compaction
+    {
+        "raw_asr": "basically operat the agent scratchpad compressor inside context underscore pruner dot py buy summarizing intermediate reasoning thoughts buy capping scratchpad length at four hundred tokens wait six hundred tokens instead uh remov obsolete observation outputs buy keeping recent tool results um right five unit tests validating scratchpad token limits",
+        "refined_text": "Operate the agent scratchpad compressor inside context_pruner.py by summarizing intermediate reasoning thoughts, capping scratchpad length at 600 tokens instead.\n\nRemove obsolete observation outputs by keeping recent tool results. Write 5 unit tests validating scratchpad token limits."
+    },
+
+    # Sample 8: Constrained decoding with finite state machine in JSON mode
+    {
+        "raw_asr": "um allocat finite state transition tables inside grammar underscore router dot py buy enforcing strict type constraints across four schema fields wait eight schema fields instead uh restrict illegal character tokens buy masking logit probabilities during model sampling um right three unit tests confirming deterministic json grammar output",
+        "refined_text": "Allocate finite state transition tables inside grammar_router.py by enforcing strict type constraints across 8 schema fields instead.\n\nRestrict illegal character tokens by masking logit probabilities during model sampling. Write 3 unit tests confirming deterministic JSON grammar output."
+    },
+
+    # Sample 9: Semantic routing between fast draft model and frontier model
+    {
+        "raw_asr": "uh communicat routing decisions inside model underscore dispatcher dot py buy dispatching user queries towards lightweight models buy evaluating query difficulty under fifty milliseconds wait eighty milliseconds instead basically escalate complex multi step reasoning requests towards frontier models um right four unit tests confirming proper model routing targets",
+        "refined_text": "Communicate routing decisions inside model_dispatcher.py by dispatching user queries towards lightweight models, evaluating query difficulty under 80 milliseconds instead.\n\nEscalate complex multi-step reasoning requests towards frontier models. Write 4 unit tests confirming proper model routing targets."
+    },
+
+    # Sample 10: RAG embedding pipeline with contextual prefix tokens
+    {
+        "raw_asr": "um calibrat document embedding chunks inside vector underscore pipeline dot py buy injecting contextual title prefixes across two five six tokens buy scoring similarity over three candidate chunks wait five candidate chunks instead okay so prune low scoring passages buy enforcing cosine score thresholds um right five unit tests validating vector retrieval precision",
+        "refined_text": "Calibrate document embedding chunks inside vector_pipeline.py by injecting contextual title prefixes across 256 tokens, scoring similarity over 5 candidate chunks instead.\n\nPrune low scoring passages by enforcing cosine score thresholds. Write 5 unit tests validating vector retrieval precision."
+    },
+
+    # =========================================================================
+    # Tier 3: Long Utterances (90+ words) - Exactly 10 samples (Samples 11-20)
+    # Multi-paragraph structure separated by \n\n. Zero numbered checklists.
+    # Natural spoken engineer narration. Ratio 0.35 - 1.25. Max \n\n: words // 25.
+    # =========================================================================
+
+    # Sample 11: ReAct Agent Loop with Guardrail Validation and Anti-Loop Detection
+    {
+        "raw_asr": "basically our agent core infrastructure team refactored the react execution engine inside agent underscore loop dot py buy adding cyclical loop detection across autonomous tool invocations previously the agent entered infinite feedback loops when tool error messages triggered identical retry queries consuming eight one nine two tokens across ten consecutive iterations wait twelve consecutive iterations instead um the platform engineers deployed an execution monitor which tracks action signatures across sixteen historical steps buy computing hash fingerprints of outgoing function payloads so basically when the when the primary agent plans an upcoming action the monitor checks historical tool signatures and flags repetitive patterns wait break execution cycles buy forcing an early reflection step instead okay so instruct copilot two benchmark loop detection buy running twenty synthetic workflow sessions and right five unit tests validating that recursive tool invocations abort gracefully without runtime exceptions",
+        "refined_text": "Our agent core infrastructure team refactored the ReAct execution engine inside agent_loop.py by adding cyclical loop detection across autonomous tool invocations. Previously the agent entered infinite feedback loops when tool error messages triggered identical retry queries, consuming 8192 tokens across 12 consecutive iterations instead.\n\nThe platform engineers deployed an execution monitor which tracks action signatures across 16 historical steps by computing hash fingerprints of outgoing function payloads. When the primary agent plans an upcoming action, the monitor checks historical tool signatures and flags repetitive patterns, breaking execution cycles by forcing an early reflection step instead.\n\nInstruct Copilot to benchmark loop detection by running 20 synthetic workflow sessions, and write 5 unit tests validating that recursive tool invocations abort gracefully without runtime exceptions."
+    },
+
+    # Sample 12: Hierarchical multi-agent supervisor routing with task decomposition
+    {
+        "raw_asr": "um our distributed agent platform team redesigned multi agent orchestration inside supervisor underscore agent dot py buy deploying a hierarchical supervisor router across autonomous worker agents previously single prompt agents attempted concurrent code writing and test execution simultaneously exhausting one six three eight four tokens across six conversational turns wait eight conversational turns instead uh the orchestration engineers implemented a task decomposition planner which partitions user goals into discrete worker stages buy assigning fixed token budgets across four subordinate worker agents so basically when the when the supervisor receives an architectural request the decomposition engine dispatches research queries towards researcher workers wait reserv remaining budget buy routing execution artifacts into dedicated verification workers instead okay so tell windsurf two test multi agent supervisor dispatch buy executing fifteen architectural generation tasks and right four unit tests verifying that subordinate agents respect isolated token quotas",
+        "refined_text": "Our distributed agent platform team redesigned multi-agent orchestration inside supervisor_agent.py by deploying a hierarchical supervisor router across autonomous worker agents. Previously single-prompt agents attempted concurrent code writing and test execution simultaneously, exhausting 16384 tokens across 8 conversational turns instead.\n\nThe orchestration engineers implemented a task decomposition planner which partitions user goals into discrete worker stages by assigning fixed token budgets across 4 subordinate worker agents. When the supervisor receives an architectural request, the decomposition engine dispatches research queries towards researcher workers, reserving remaining budget by routing execution artifacts into dedicated verification workers instead.\n\nTell Windsurf to test multi-agent supervisor dispatch by executing 15 architectural generation tasks, and write 4 unit tests verifying that subordinate agents respect isolated token quotas."
+    },
+
+    # Sample 13: Long-context needle-in-a-haystack retrieval evaluation harness
+    {
+        "raw_asr": "uh our evaluation engineering team overhauled retrieval assessment inside retrieval underscore benchmark dot py buy constructing a needle in a haystack evaluation harness across varying prompt depths previously our retrieval evaluations measured only surface token overlap masking context retrieval failures when target facts fell between thirty percent and seventy percent context depth across three two seven six eight tokens um the assessment developers integrated a synthetic document generator which inserts target retrieval keys at parameterized document offsets buy measuring exact key recall across five distinct context depths so basically when the when the harness runs an evaluation cycle the benchmark executor inserts target keys into distractor contexts wait evaluat retrieval precision buy measuring answer accuracy across eight evaluation trials wait ten evaluation trials instead okay so instruct claude two run retrieval benchmark sweeps across twenty five synthetic long context documents and right five unit tests verifying that retrieval accuracy remains above ninety percent",
+        "refined_text": "Our evaluation engineering team overhauled retrieval assessment inside retrieval_benchmark.py by constructing a needle-in-a-haystack evaluation harness across varying prompt depths. Previously our retrieval evaluations measured only surface token overlap, masking context retrieval failures when target facts fell between 30 percent and 70 percent context depth across 32768 tokens.\n\nThe assessment developers integrated a synthetic document generator which inserts target retrieval keys at parameterized document offsets by measuring exact key recall across 5 distinct context depths. When the harness runs an evaluation cycle, the benchmark executor inserts target keys into distractor contexts, evaluating retrieval precision by measuring answer accuracy across 10 evaluation trials instead.\n\nInstruct Claude to run retrieval benchmark sweeps across 25 synthetic long-context documents, and write 5 unit tests verifying that retrieval accuracy remains above 90 percent."
+    },
+
+    # Sample 14: Streaming speculative decoding pipeline with draft model verification
+    {
+        "raw_asr": "um our inference optimization team improved text generation latency inside speculative underscore runner dot py buy integrating a speculative decoding pipeline across draft and target models previously single model autoregressive generation suffered from high latency during code generation taking one hundred twenty milliseconds per token across four zero nine six generated tokens uh the machine learning engineers deployed a speculative verification engine which generates four candidate draft tokens with a lightweight draft model buy validating draft logits against the primary target model in parallel so basically when the when the draft model emits token predictions the speculative engine evaluates acceptance criteria wait reduc inference latency buy accepting valid draft sequences across six concurrent streams wait eight concurrent streams instead okay so ask aider two benchmark speculative generation speedup across forty complex coding prompts and right four unit tests verifying that verified speculative outputs match standard greedy sampling",
+        "refined_text": "Our inference optimization team improved text generation latency inside speculative_runner.py by integrating a speculative decoding pipeline across draft and target models. Previously single-model autoregressive generation suffered from high latency during code generation, taking 120 milliseconds per token across 4096 generated tokens.\n\nThe machine learning engineers deployed a speculative verification engine which generates 4 candidate draft tokens with a lightweight draft model by validating draft logits against the primary target model in parallel. When the draft model emits token predictions, the speculative engine evaluates acceptance criteria, reducing inference latency by accepting valid draft sequences across 8 concurrent streams instead.\n\nAsk Aider to benchmark speculative generation speedup across 40 complex coding prompts, and write 4 unit tests verifying that verified speculative outputs match standard greedy sampling."
+    },
+
+    # Sample 15: Automated prompt regression testing with Bradley-Terry preference modeling
+    {
+        "raw_asr": "basically our prompt engineering team modernized automated evaluation inside regression underscore suite dot py buy implementing a pairwise bradley terry preference scoring pipeline across agent revisions previously prompt updates suffered from subjective regression bugs causing silent failures across twenty five production agent workflows without clear win rate metrics uh the quality engineers created a pairwise comparison judge which presents candidate outputs alongside baseline responses buy computing pairwise preference probabilities across four distinct judge models so basically when the when an engineer submits a prompt modification the regression harness collects model outputs wait evaluat prompt win rates buy calculating bradley terry coefficients across forty benchmark test cases wait fifty benchmark test cases instead okay so instruct cursor two run automated prompt regression sweeps across eighty evaluation dialogues and right five unit tests validating that judge scoring outputs match baseline preferences",
+        "refined_text": "Our prompt engineering team modernized automated evaluation inside regression_suite.py by implementing a pairwise Bradley-Terry preference scoring pipeline across agent revisions. Previously prompt updates suffered from subjective regression bugs, causing silent failures across 25 production agent workflows without clear win-rate metrics.\n\nThe quality engineers created a pairwise comparison judge which presents candidate outputs alongside baseline responses by computing pairwise preference probabilities across 4 distinct judge models. When an engineer submits a prompt modification, the regression harness collects model outputs, evaluating prompt win rates by calculating Bradley-Terry coefficients across 50 benchmark test cases instead.\n\nInstruct Cursor to run automated prompt regression sweeps across 80 evaluation dialogues, and write 5 unit tests validating that judge scoring outputs match baseline preferences."
+    },
+
+    # Sample 16: Contextual query expansion and HyDE pipeline for cold-start RAG
+    {
+        "raw_asr": "um our enterprise search team upgraded cold start document retrieval inside hyde underscore expander dot py buy deploying a hypothetical document expansion pipeline across domain knowledge bases previously short user queries missed relevant technical documentation causing low recall across thirty enterprise search queries when documentation used distinct jargon uh the retrieval engineers built a query generator which produces two hypothetical answer passages wait three hypothetical answer passages instead with a fast generator model buy projecting generated passages into dense vector embeddings across one zero two four dimensions so basically when the when a user submits an ambiguous search query the pipeline synthesizes hypothetical documents wait boost retrieval recall buy querying vector indexes with averaged hypothetical embeddings across twenty candidate passages instead okay so tell copilot two evaluate hypothetical query expansion across sixty technical documentation queries and right four unit tests verifying that hypothetical embeddings increase retrieval precision",
+        "refined_text": "Our enterprise search team upgraded cold-start document retrieval inside hyde_expander.py by deploying a hypothetical document expansion pipeline across domain knowledge bases. Previously short user queries missed relevant technical documentation, causing low recall across 30 enterprise search queries when documentation used distinct jargon.\n\nThe retrieval engineers built a query generator which produces 3 hypothetical answer passages instead with a fast generator model by projecting generated passages into dense vector embeddings across 1024 dimensions. When a user submits an ambiguous search query, the pipeline synthesizes hypothetical documents, boosting retrieval recall by querying vector indexes with averaged hypothetical embeddings across 20 candidate passages instead.\n\nTell Copilot to evaluate hypothetical query expansion across 60 technical documentation queries, and write 4 unit tests verifying that hypothetical embeddings increase retrieval precision."
+    },
+
+    # Sample 17: Agent scratchpad summarization and episodic memory consolidation graph
+    {
+        "raw_asr": "basically our cognitive agent architecture group upgraded long term agent persistence inside memory underscore consolidator dot py buy creating an episodic memory consolidation graph across multi day development sessions previously agents lost cross session context when conversational scratchpads exceeded twelve turns causing repetitive questions across sixteen developer interactions wait eighteen developer interactions instead um the memory engineers constructed a knowledge graph extractor which extracts entities and causal relationships buy linking extracted nodes across six relationship types so basically when the when an agent session concludes the consolidation pipeline parses raw interaction traces wait preserv critical project knowledge buy writing deduplicated facts into an episodic graph store across twenty four historical interactions instead okay so ask aider two benchmark episodic memory consolidation buy simulating thirty five development workflows and right five unit tests validating that entity queries return historical architecture context",
+        "refined_text": "Our cognitive agent architecture group upgraded long-term agent persistence inside memory_consolidator.py by creating an episodic memory consolidation graph across multi-day development sessions. Previously agents lost cross-session context when conversational scratchpads exceeded 12 turns, causing repetitive questions across 18 developer interactions instead.\n\nThe memory engineers constructed a knowledge graph extractor which extracts entities and causal relationships by linking extracted nodes across 6 relationship types. When an agent session concludes, the consolidation pipeline parses raw interaction traces, preserving critical project knowledge by writing deduplicated facts into an episodic graph store across 24 historical interactions instead.\n\nAsk Aider to benchmark episodic memory consolidation by simulating 35 development workflows, and write 5 unit tests validating that entity queries return historical architecture context."
+    },
+
+    # Sample 18: Constrained regex masking for deterministic CLI parameter generation
+    {
+        "raw_asr": "uh our developer tooling team redesigned structured cli command generation inside regex underscore decoder dot py buy enforcing grammar constraints directly on model output logits previously model completions generated invalid cli parameters producing syntax errors across twenty percent of terminal commands when models invented non existent options um the tooling engineers deployed a token mask validator which restricts vocabulary candidates buy compiling target cli grammar definitions into regular expression match trees across eight parameter patterns so basically when the when the model decodes consecutive command tokens the grammar parser masks invalid vocabulary indices wait enforc valid command generation buy allowing only legal flag syntax across six supported subcommands wait sixteen supported subcommands instead okay so tell cursor two test grammar constrained decoding across fifty shell generation scenarios and right four unit tests verifying that generated commands match command grammar rules",
+        "refined_text": "Our developer tooling team redesigned structured CLI command generation inside regex_decoder.py by enforcing grammar constraints directly on model output logits. Previously model completions generated invalid CLI parameters, producing syntax errors across 20 percent of terminal commands when models invented non-existent options.\n\nThe tooling engineers deployed a token mask validator which restricts vocabulary candidates by compiling target CLI grammar definitions into regular expression match trees across 8 parameter patterns. When the model decodes consecutive command tokens, the grammar parser masks invalid vocabulary indices, enforcing valid command generation by allowing only legal flag syntax across 16 supported subcommands instead.\n\nTell Cursor to test grammar-constrained decoding across 50 shell generation scenarios, and write 4 unit tests verifying that generated commands match command grammar rules."
+    },
+
+    # Sample 19: Multi-turn prompt injection detection with canary tokens and perplexity filtering
+    {
+        "raw_asr": "basically our security platform team hardened agent runtime defenses inside canary underscore filter dot py buy implementing input perplexity filtering alongside canary token tracking previously indirect injection payloads evaded single turn prompt checks hijacking downstream agent execution across fourteen enterprise document queries when malicious markdown contained hidden instructions um the security engineers built a multi stage input analyzer which calculates token perplexity scores while inserting randomized twelve character canary strings into private prompt boundaries across four agent interaction tiers so basically when the when untrusted documents enter the retrieval pipeline the analyzer scores input perplexity wait block malicious injection attempts buy rejecting inputs showing abnormal token distributions across twenty five adversarial test cases wait thirty adversarial test cases instead okay so instruct windsurf two benchmark injection filtering across seventy adversarial attack payloads and right five unit tests verifying that canary extraction attempts trigger immediate session termination",
+        "refined_text": "Our security platform team hardened agent runtime defenses inside canary_filter.py by implementing input perplexity filtering alongside canary token tracking. Previously indirect injection payloads evaded single-turn prompt checks, hijacking downstream agent execution across 14 enterprise document queries when malicious markdown contained hidden instructions.\n\nThe security engineers built a multi-stage input analyzer which calculates token perplexity scores while inserting randomized 12-character canary strings into private prompt boundaries across 4 agent interaction tiers. When untrusted documents enter the retrieval pipeline, the analyzer scores input perplexity, blocking malicious injection attempts by rejecting inputs showing abnormal token distributions across 30 adversarial test cases instead.\n\nInstruct Windsurf to benchmark injection filtering across 70 adversarial attack payloads, and write 5 unit tests verifying that canary extraction attempts trigger immediate session termination."
+    },
+
+    # Sample 20: Asynchronous tool execution pool with circuit breaker pattern
+    {
+        "raw_asr": "um our agent platform operations team stabilized external tool execution inside tool underscore breaker dot py buy implementing an asynchronous circuit breaker across remote tool providers previously transient network outages or api rate limit errors caused cascading agent stalls blocking sixteen worker threads across ten minutes when third party endpoints failed uh the infrastructure developers created an asynchronous execution pool using a sink i o which tracks failure frequencies buy opening the circuit when error rates exceed fifty percent across six consecutive attempts wait eight consecutive attempts instead so basically when remote tools experience degraded responsiveness the circuit breaker trips into an open state wait maintain agent availability buy routing fallback responses into the planning agent across twenty simulated failure scenarios instead okay so ask claude two test circuit breaker recovery across forty simulated network faults and right four unit tests confirming that half open states verify endpoint recovery before resuming full traffic",
+        "refined_text": "Our agent platform operations team stabilized external tool execution inside tool_breaker.py by implementing an asynchronous circuit breaker across remote tool providers. Previously transient network outages or API rate limit errors caused cascading agent stalls, blocking 16 worker threads across 10 minutes when third-party endpoints failed.\n\nThe infrastructure developers created an asynchronous execution pool using asyncio, which tracks failure frequencies by opening the circuit when error rates exceed 50 percent across 8 consecutive attempts instead. When remote tools experience degraded responsiveness, the circuit breaker trips into an open state, maintaining agent availability by routing fallback responses into the planning agent across 20 simulated failure scenarios instead.\n\nAsk Claude to test circuit breaker recovery across 40 simulated network faults, and write 4 unit tests confirming that half-open states verify endpoint recovery before resuming full traffic."
+    }
+]
+
+# Validation checks
+print(f"Total samples: {len(batch)}")
+assert len(batch) == 20, f"Expected 20 samples, got {len(batch)}"
+
+# Check evaluation set leakage
+eval_file = Path("sft_eval.json")
+if eval_file.exists():
+    with open(eval_file, "r", encoding="utf-8") as f:
+        eval_data = json.load(f)
+    eval_raws = {e.get("raw_asr", e.get("input", "")).strip().lower() for e in eval_data}
+    eval_refs = {e.get("refined_text", e.get("output", "")).strip() for e in eval_data}
+    for idx, s in enumerate(batch, 1):
+        raw_test = s["raw_asr"].strip().lower()
+        ref_test = s["refined_text"].strip()
+        if raw_test in eval_raws:
+            raise ValueError(f"Sample {idx} raw_asr leaked into evaluation set!")
+        if ref_test in eval_refs:
+            raise ValueError(f"Sample {idx} refined_text leaked into evaluation set!")
+    print("Eval leakage check passed: 0 leaks.")
+
+# Check individual validation and cleaning
+for idx, s in enumerate(batch, 1):
+    is_valid, reason = validate_pair(s)
+    if not is_valid:
+        raise ValueError(f"Sample {idx} failed validate_pair: {reason}")
+    res, status = clean_sample(s["raw_asr"], s["refined_text"])
+    if status != "kept":
+        raise ValueError(f"Sample {idx} failed clean_sample: {status}")
+
+print("Individual validation & cleaner checks passed: 20/20 kept.")
+
+# Batch validation
+batch_valid, batch_reason, tier_counts = validate_batch(batch, min_short=4, min_medium=6, min_long=10)
+if not batch_valid:
+    raise ValueError(f"Batch validation failed: {batch_reason}")
+
+print(f"Batch validation passed: {batch_reason}")
+print(f"Tier counts: {tier_counts}")
+
+# Save verified batch to scratch/subagent_batch_112.json
+output_path = Path("scratch/subagent_batch_112.json")
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump(batch, f, ensure_ascii=False, indent=2)
+
+print(f"Saved {len(batch)} verified samples to {output_path}")

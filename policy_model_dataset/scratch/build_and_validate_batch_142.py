@@ -1,0 +1,193 @@
+import json
+import sys
+import os
+from pathlib import Path
+
+# Add code directory to path
+sys.path.insert(0, os.path.abspath("code"))
+
+from validator import validate_pair, validate_batch, count_active_noise_layers, get_noise_layer_count
+from cleaner import clean_sample
+
+batch = [
+    # =========================================================================
+    # Tier 1: Short Utterances (< 25 words) - Exactly 4 samples (Samples 1-4)
+    # Exactly 1 grammatically complete sentence. Zero newlines. Max 1 cut-word.
+    # Active noise layers >= 3. Rationale with "by <action>". No dotted filenames.
+    # =========================================================================
+
+    # Sample 1: Context token limits in agent orchestration
+    {
+        "raw_asr": "um allocat prompt underscore budget limits buy reserving four thousand tokens four host c p u memory",
+        "refined_text": "Allocate prompt_budget limits by reserving 4000 tokens for host CPU memory."
+    },
+
+    # Sample 2: Model Context Protocol tool router termination
+    {
+        "raw_asr": "uh terminat unresponsive tool underscore router calls buy enforcing five second timeout thresholds four r p c sockets",
+        "refined_text": "Terminate unresponsive tool_router calls by enforcing 5 second timeout thresholds for RPC sockets."
+    },
+
+    # Sample 3: Speculative decoding token verification in agent pipeline
+    {
+        "raw_asr": "basically recalculat speculative underscore verification batches buy offloading eight candidate draft tokens two local a sink i o workers",
+        "refined_text": "Recalculate speculative_verification batches by offloading 8 candidate draft tokens to local asyncio workers."
+    },
+
+    # Sample 4: Episodic agent memory table initialization in Postgres
+    {
+        "raw_asr": "um initializ agent underscore memory tables buy partitioning sixteen conversation partitions inside post gres",
+        "refined_text": "Initialize agent_memory tables by partitioning 16 conversation partitions inside Postgres."
+    },
+
+    # =========================================================================
+    # Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples (Samples 5-10)
+    # 1 to 3 grammatically complete sentences. Natural \n\n breaks. Max \n\n: words // 25.
+    # Active noise layers >= 4. Rationale with "by <action>".
+    # =========================================================================
+
+    # Sample 5: Few-shot prompt exemplar selector with vector similarity
+    {
+        "raw_asr": "uh configur dynamic few shot exemplar selection inside exemplar underscore selector dot py buy scoring candidate demonstrations across twelve semantic clusters wait sixteen prompt clusters instead buy matching cosine similarity rankings basically filter redundant exemplars buy evaluating vector distances across a sink i o query workers right three unit tests verifying dynamic prompt exemplar injection",
+        "refined_text": "Configure dynamic few-shot exemplar selection inside exemplar_selector.py by scoring candidate demonstrations across 12 semantic clusters, matching cosine similarity rankings across 16 prompt clusters instead.\n\nFilter redundant exemplars by evaluating vector distances across asyncio query workers. Write 3 unit tests verifying dynamic prompt exemplar injection."
+    },
+
+    # Sample 6: Constrained JSON schema decoding with grammar masks
+    {
+        "raw_asr": "um initializ constrained grammar decoding inside grammar underscore validator dot py buy compiling j son schema regex rules across eight terminal production states wait twenty four parser states instead buy preventing syntax violations you know prune invalid vocabulary tokens buy applying dynamic logit masks across host c p u threads right four unit tests confirming structured agent response parsing",
+        "refined_text": "Initialize constrained grammar decoding inside grammar_validator.py by compiling JSON schema regex rules across 8 terminal production states, preventing syntax violations across 24 parser states instead.\n\nPrune invalid vocabulary tokens by applying dynamic logit masks across host CPU threads. Write 4 unit tests confirming structured agent response parsing."
+    },
+
+    # Sample 7: Agent execution trace logger and telemetry span exporter
+    {
+        "raw_asr": "basically operat trace logging collectors inside agent underscore telemetry dot py buy streaming prompt tokens across six telemetry worker queues wait ten streaming sinks instead buy preserving agent observability um forward invocation spans buy sending structured payload batches across four remote r p c collectors right three unit tests confirming trace span persistence",
+        "refined_text": "Operate trace logging collectors inside agent_telemetry.py by streaming prompt tokens across 6 telemetry worker queues, preserving agent observability across 10 streaming sinks instead.\n\nForward invocation spans by sending structured payload batches across 4 remote RPC collectors. Write 3 unit tests confirming trace span persistence."
+    },
+
+    # Sample 8: RAG dense chunk retriever and cross-encoder reranker pipeline
+    {
+        "raw_asr": "uh recalculat semantic document rankings inside chunk underscore ranker dot py buy evaluating cross encoder relevance scores across sixteen candidate passages wait thirty two retrieved chunks instead buy isolating high quality context basically store top scoring embeddings buy inserting dense vector records inside post gres right five unit tests verifying retrieval ranking accuracy",
+        "refined_text": "Recalculate semantic document rankings inside chunk_ranker.py by evaluating cross-encoder relevance scores across 16 candidate passages, isolating high-quality context across 32 retrieved chunks instead.\n\nStore top-scoring embeddings by inserting dense vector records inside Postgres. Write 5 unit tests verifying retrieval ranking accuracy."
+    },
+
+    # Sample 9: Autonomous multi-tool loop and reflection dispatcher with asyncio
+    {
+        "raw_asr": "um deduplicat parallel tool execution calls inside tool underscore dispatcher dot py buy filtering redundant parameter payloads across five concurrent agent tasks wait nine planned invocations instead buy suppressing duplicate queries you know orchestrat retry routines buy executing exponential backoff cycles across local a sink i o event loops right four unit tests confirming deduplicated tool execution",
+        "refined_text": "Deduplicate parallel tool execution calls inside tool_dispatcher.py by filtering redundant parameter payloads across 5 concurrent agent tasks, suppressing duplicate queries across 9 planned invocations instead.\n\nOrchestrate retry routines by executing exponential backoff cycles across local asyncio event loops. Write 4 unit tests confirming deduplicated tool execution."
+    },
+
+    # Sample 10: Model Context Protocol (MCP) tool definition schema generator
+    {
+        "raw_asr": "basically configur tool manifest definitions inside protocol underscore registry dot py buy validating input parameter types across six declared functions wait twelve schema definitions instead buy standardizing agent interfaces uh terminat malformed tool registrations buy rejecting invalid j son payloads across host c p u memory right three unit tests verifying schema registration integrity",
+        "refined_text": "Configure tool manifest definitions inside protocol_registry.py by validating input parameter types across 6 declared functions, standardizing agent interfaces across 12 schema definitions instead.\n\nTerminate malformed tool registrations by rejecting invalid JSON payloads across host CPU memory. Write 3 unit tests verifying schema registration integrity."
+    },
+
+    # =========================================================================
+    # Tier 3: Long Utterances (90+ words) - Exactly 10 samples (Samples 11-20)
+    # Multi-paragraph structure separated by \n\n. Zero numbered checklists.
+    # Natural spoken engineer narration. Ratio 0.35 - 1.25. Max \n\n: words // 25.
+    # Active noise layers >= 4. Rationale with "by <action>".
+    # =========================================================================
+
+    # Sample 11: Speculative Decoding and Draft Model KV Cache Verification Loop
+    {
+        "raw_asr": "basically our inference serving group refactored speculative draft decoding inside speculative underscore engine dot py buy implementing dynamic draft verification loops across distributed model workers previously fixed length draft sequences suffered from low acceptance rates failing across twelve generation runs wait eighteen generation runs instead buy proposing out of vocabulary candidate tokens um the serving engineers deployed a speculative token verifier which synchronizat draft tokens across sixteen attention heads buy evaluating target model logit distributions before token emission so basically when an incoming generation query reaches the inference engine the speculative coordinator evaluates accepted tokens wait terminat discarded draft branches buy rolling back context positions across four zero nine six tokens instead okay so instruct cursor two benchmark speculative speedup ratios across sixty concurrent a sink i o requests right five unit tests verifying that draft verification mismatches trigger target model token fallbacks without corrupting context cache state",
+        "refined_text": "Our inference serving group refactored speculative draft decoding inside speculative_engine.py by implementing dynamic draft verification loops across distributed model workers. Previously, fixed-length draft sequences suffered from low acceptance rates, failing across 18 generation runs instead by proposing out-of-vocabulary candidate tokens.\n\nThe serving engineers deployed a speculative token verifier which synchronizes draft tokens across 16 attention heads by evaluating target model logit distributions before token emission. When an incoming generation query reaches the inference engine, the speculative coordinator evaluates accepted tokens, terminating discarded draft branches by rolling back context positions across 4096 tokens instead.\n\nInstruct Cursor to benchmark speculative speedup ratios across 60 concurrent asyncio requests, and write 5 unit tests verifying that draft verification mismatches trigger target model token fallbacks without corrupting context cache state."
+    },
+
+    # Sample 12: Multi-Turn Conversational Memory Compaction & Hierarchical Vector Summarization in Postgres
+    {
+        "raw_asr": "um our agent architecture team overhauled conversational context management inside memory underscore compactor dot py buy introducing hierarchical memory summarization passes across long running agent sessions previously linear message histories exhausted context windows exceeding eight one nine two tokens across fourteen conversation rounds wait twenty conversation rounds instead buy appending raw user messages without compression uh the platform engineers deployed a recursive memory summarizer which condens older dialogue turns across thirty two message blocks buy extracting key semantic assertions before context ingestion so basically when total dialogue history exceeds the allocated budget the memory manager persists episodic summaries wait initializ vector partition tables buy indexing conversation embeddings inside post gres instead okay so instruct claude two benchmark memory compaction latency across forty concurrent a sink i o sessions right four unit tests validating that recursive summarization preserves critical entity attributes across multi turn interactions",
+        "refined_text": "Our agent architecture team overhauled conversational context management inside memory_compactor.py by introducing hierarchical memory summarization passes across long-running agent sessions. Previously, linear message histories exhausted context windows, exceeding 8192 tokens across 20 conversation rounds instead by appending raw user messages without compression.\n\nThe platform engineers deployed a recursive memory summarizer which condenses older dialogue turns across 32 message blocks by extracting key semantic assertions before context ingestion. When total dialogue history exceeds the allocated budget, the memory manager persists episodic summaries, initializing vector partition tables by indexing conversation embeddings inside Postgres instead.\n\nInstruct Claude to benchmark memory compaction latency across 40 concurrent asyncio sessions, and write 4 unit tests validating that recursive summarization preserves critical entity attributes across multi-turn interactions."
+    },
+
+    # Sample 13: Autonomous Agent Reflection and ReAct Reasoning Loop in LangGraph
+    {
+        "raw_asr": "basically our agent orchestration infrastructure group rebuilt the autonomous execution controller inside reflection underscore loop dot py buy integrating structured observation validation across multi step reasoning tasks previously unconstrained tool execution loops triggered runaway recursions failing across ten agent tasks wait sixteen automated workflows instead buy repeating identical failed search queries um the runtime engineers implemented a reflection supervisor which evaluat intermediate step outputs across eight candidate execution paths buy detecting repetitive tool invocation patterns before downstream dispatch so basically when an agent generates a duplicate tool call the reflection supervisor intervenes wait terminat cyclic execution traces buy enforcing maximum iteration bounds across twenty five reasoning steps instead okay so instruct cursor two benchmark agent recovery rates across forty five simulated a sink i o task failures right five unit tests verifying that detected execution cycles redirect the agent into alternative tool strategies",
+        "refined_text": "Our agent orchestration infrastructure group rebuilt the autonomous execution controller inside reflection_loop.py by integrating structured observation validation across multi-step reasoning tasks. Previously, unconstrained tool execution loops triggered runaway recursions, failing across 16 automated workflows instead by repeating identical failed search queries.\n\nThe runtime engineers implemented a reflection supervisor which evaluates intermediate step outputs across 8 candidate execution paths by detecting repetitive tool invocation patterns before downstream dispatch. When an agent generates a duplicate tool call, the reflection supervisor intervenes, terminating cyclic execution traces by enforcing maximum iteration bounds across 25 reasoning steps instead.\n\nInstruct Cursor to benchmark agent recovery rates across 45 simulated asyncio task failures, and write 5 unit tests verifying that detected execution cycles redirect the agent into alternative tool strategies."
+    },
+
+    # Sample 14: Constrained Structured Output Generation with Context-Free Grammars
+    {
+        "raw_asr": "uh our platform inference group upgraded structured output generation inside schema underscore generator dot py buy deploying pushdown grammar decoders across production agent endpoints previously prompt based j son formatting produced malformed outputs failing across fourteen client responses wait twenty client responses instead buy omitting required boolean schema properties um the inference engineers configured a token mask indexer which compil regex state machines across twelve target pydantic schemas buy computing legal token sets before sampling so basically when the language model evaluates vocabulary logits the grammar engine masks prohibited tokens wait recalculat logit probability distributions buy offloading token bitmasks across host c p u threads instead okay so instruct claude two benchmark structured generation throughput across seventy concurrent a sink i o requests right four unit tests confirming that grammar masked sampling produces strictly valid j son documents without schema parse errors",
+        "refined_text": "Our platform inference group upgraded structured output generation inside schema_generator.py by deploying pushdown grammar decoders across production agent endpoints. Previously, prompt-based JSON formatting produced malformed outputs, failing across 20 client responses instead by omitting required boolean schema properties.\n\nThe inference engineers configured a token mask indexer which compiles regex state machines across 12 target Pydantic schemas by computing legal token sets before sampling. When the language model evaluates vocabulary logits, the grammar engine masks prohibited tokens, recalculating logit probability distributions by offloading token bitmasks across host CPU threads instead.\n\nInstruct Claude to benchmark structured generation throughput across 70 concurrent asyncio requests, and write 4 unit tests confirming that grammar-masked sampling produces strictly valid JSON documents without schema parse errors."
+    },
+
+    # Sample 15: Multi-Provider LLM Gateway with Fallback Routing and Token Rate Limiting
+    {
+        "raw_asr": "um our core platform team hardened external model routing inside routing underscore gateway dot py buy deploying adaptive rate limiter queues across enterprise foundation model providers previously sudden traffic spikes triggered upstream rate limit errors failing across twelve batch translation tasks wait eighteen production workloads instead buy exceeding ten thousand tokens per minute quotas uh the reliability engineers created a token bucket scheduler which tracks model consumption across sixteen registered provider routes buy evaluating dynamic quota consumption before request dispatch so basically when an upstream provider returns a status four hundred twenty nine the gateway redirects traffic wait allocat fallback provider endpoints buy routing requests across backup model endpoints instead you know instruct cursor two benchmark gateway failover latency across fifty concurrent a sink i o requests right five unit tests validating that secondary provider fallbacks maintain streaming token delivery without connection drops",
+        "refined_text": "Our core platform team hardened external model routing inside routing_gateway.py by deploying adaptive rate limiter queues across enterprise foundation model providers. Previously, sudden traffic spikes triggered upstream rate limit errors, failing across 18 production workloads instead by exceeding 10000 tokens per minute quotas.\n\nThe reliability engineers created a token bucket scheduler which tracks model consumption across 16 registered provider routes by evaluating dynamic quota consumption before request dispatch. When an upstream provider returns a status 429, the gateway redirects traffic, allocating fallback provider endpoints by routing requests across backup model endpoints instead.\n\nInstruct Cursor to benchmark gateway failover latency across 50 concurrent asyncio requests, and write 5 unit tests validating that secondary provider fallbacks maintain streaming token delivery without connection drops."
+    },
+
+    # Sample 16: Automated Prompt Evaluation and LLM-as-a-Judge Scoring Pipeline
+    {
+        "raw_asr": "basically our quality engineering group established automated evaluation pipelines inside judge underscore evaluator dot py buy orchestrating llm as a judge scoring passes across agent execution traces previously manual prompt reviews were slow and inconsistent reviewing only twenty evaluation runs wait thirty evaluation runs instead buy relying on subjective annotator feedback um the test engineers deployed a rubric based judging harness which evaluates agent responses across sixteen standardized quality dimensions buy grading reasoning faithfulness and tool parameter validity before release so basically when an evaluation run finishes the scoring harness computes aggregate alignment metrics wait initializ benchmark result tables buy storing rubric evaluations inside post gres instead okay so instruct cursor two benchmark scoring throughput across forty concurrent a sink i o judging tasks right four unit tests confirming that score discrepancies between judge models trigger tie breaker evaluation passes",
+        "refined_text": "Our quality engineering group established automated evaluation pipelines inside judge_evaluator.py by orchestrating LLM-as-a-judge scoring passes across agent execution traces. Previously, manual prompt reviews were slow and inconsistent, reviewing only 30 evaluation runs instead by relying on subjective annotator feedback.\n\nThe test engineers deployed a rubric-based judging harness which evaluates agent responses across 16 standardized quality dimensions by grading reasoning faithfulness and tool parameter validity before release. When an evaluation run finishes, the scoring harness computes aggregate alignment metrics, initializing benchmark result tables by storing rubric evaluations inside Postgres instead.\n\nInstruct Cursor to benchmark scoring throughput across 40 concurrent asyncio judging tasks, and write 4 unit tests confirming that score discrepancies between judge models trigger tie-breaker evaluation passes."
+    },
+
+    # Sample 17: Agent Tool Calling Sandbox and MicroVM Isolation Gateway
+    {
+        "raw_asr": "um our security engineering group locked down agent code execution inside sandbox underscore runner dot py buy enforcing ephemeral container isolation across autonomous tool dispatchers previously direct host code execution exposed system files to arbitrary writes failing across ten security audits wait sixteen vulnerability scans instead buy executing unconfined bash commands uh the infrastructure engineers configured a gvisor sandbox harness which isolates tool execution environments across twenty four lightweight worker microVMs buy intercepting system calls before execution so basically when an agent invokes a Python execution tool the runner dispatches the payload to an isolated worker wait terminat stalled sandbox containers buy enforcing hard execution limits across thirty seconds instead okay so instruct claude two benchmark code execution dispatch latency across fifty concurrent a sink i o invocations right five unit tests verifying that blocked system call attempts return structured security violations across r p c channels",
+        "refined_text": "Our security engineering group locked down agent code execution inside sandbox_runner.py by enforcing ephemeral container isolation across autonomous tool dispatchers. Previously, direct host code execution exposed system files to arbitrary writes, failing across 16 vulnerability scans instead by executing unconfined Bash commands.\n\nThe infrastructure engineers configured a gVisor sandbox harness which isolates tool execution environments across 24 lightweight worker microVMs by intercepting system calls before execution. When an agent invokes a Python execution tool, the runner dispatches the payload to an isolated worker, terminating stalled sandbox containers by enforcing hard execution limits across 30 seconds instead.\n\nInstruct Claude to benchmark code execution dispatch latency across 50 concurrent asyncio invocations, and write 5 unit tests verifying that blocked system call attempts return structured security violations across RPC channels."
+    },
+
+    # Sample 18: Dynamic Prompt Compression and Token Pruning Engine
+    {
+        "raw_asr": "basically our platform optimization group accelerated large prompt ingestion inside prompt underscore compressor dot py buy deploying extractive token pruning algorithms across agent context pipelines previously verbose system instructions and document transcripts exhausted token quotas exceeding one six three eight four tokens across twelve generation requests wait eighteen agent workflows instead buy retaining repetitive boilerplate prompt segments um the optimization engineers implemented a perplexity based token filter which scores contextual token entropy across thirty two attention blocks buy removing uninformative prompt tokens before model dispatch so basically when prompt size exceeds the reserved budget the compressor condenses dynamic context chunks wait recalculat attention key value states buy caching static prompt prefixes across host c p u memory instead okay so instruct cursor two benchmark prompt compression ratios across sixty concurrent a sink i o tasks right four unit tests validating that extractive token pruning preserves factual task instructions without degrading model answer quality",
+        "refined_text": "Our platform optimization group accelerated large prompt ingestion inside prompt_compressor.py by deploying extractive token pruning algorithms across agent context pipelines. Previously, verbose system instructions and document transcripts exhausted token quotas, exceeding 16384 tokens across 18 agent workflows instead by retaining repetitive boilerplate prompt segments.\n\nThe optimization engineers implemented a perplexity-based token filter which scores contextual token entropy across 32 attention blocks by removing uninformative prompt tokens before model dispatch. When prompt size exceeds the reserved budget, the compressor condenses dynamic context chunks, recalculating attention key-value states by caching static prompt prefixes across host CPU memory instead.\n\nInstruct Cursor to benchmark prompt compression ratios across 60 concurrent asyncio tasks, and write 4 unit tests validating that extractive token pruning preserves factual task instructions without degrading model answer quality."
+    },
+
+    # Sample 19: Prompt Injection Defense and Input Guardrails Token Classifier
+    {
+        "raw_asr": "uh our platform security group fortified agent input boundaries inside guardrail underscore classifier dot py buy implementing multi stage prompt injection detection across public agent interfaces previously heuristic regex filters failed to catch adversarial jailbreak variations letting twelve malicious prompts bypass detection wait twenty adversarial prompts bypass detection instead buy obscuring malicious instructions inside base six four encodings um the security team trained a lightweight token classification head which evaluates embedding vectors across sixteen hidden layers buy scoring prompt injection probabilities before agent processing so basically when an incoming user prompt exceeds the risk threshold the guardrail interceptor blocks downstream model routing wait terminat suspicious session tokens buy logging security telemetry events inside post gres instead you know instruct claude two benchmark classifier detection throughput across eighty concurrent a sink i o queries right five unit tests confirming that adversarial role hijacking prompts trigger deterministic rejection envelopes",
+        "refined_text": "Our platform security group fortified agent input boundaries inside guardrail_classifier.py by implementing multi-stage prompt injection detection across public agent interfaces. Previously, heuristic regex filters failed to catch adversarial jailbreak variations, letting 20 adversarial prompts bypass detection instead by obscuring malicious instructions inside Base64 encodings.\n\nThe security team trained a lightweight token classification head which evaluates embedding vectors across 16 hidden layers by scoring prompt injection probabilities before agent processing. When an incoming user prompt exceeds the risk threshold, the guardrail interceptor blocks downstream model routing, terminating suspicious session tokens by logging security telemetry events inside Postgres instead.\n\nInstruct Claude to benchmark classifier detection throughput across 80 concurrent asyncio queries, and write 5 unit tests confirming that adversarial role hijacking prompts trigger deterministic rejection envelopes."
+    },
+
+    # Sample 20: Hierarchical Multi-Agent Orchestrator and State Graph Routing
+    {
+        "raw_asr": "um our distributed agent systems team refactored multi agent task coordination inside agent underscore orchestrator dot py buy implementing directed acyclic state graphs across collaborative agent clusters previously centralized coordinator scripts caused blocking deadlocks failing across eight multi agent workflows wait fourteen complex planning runs instead buy serializing independent subtask executions uh the systems engineers configured a state machine graph engine which routes intermediate task states across twenty four specialized sub agent workers buy evaluating branch edge conditions before transition so basically when a subtask finishes the orchestrator verifies output schemas wait allocat parallel child worker jobs buy dispatching subtask requests across twelve remote r p c handlers instead okay so instruct cursor two benchmark graph execution latency across thirty concurrent a sink i o workflows right four unit tests validating that failed sub agent steps trigger state graph rollback handlers without losing shared memory state",
+        "refined_text": "Our distributed agent systems team refactored multi-agent task coordination inside agent_orchestrator.py by implementing directed acyclic state graphs across collaborative agent clusters. Previously, centralized coordinator scripts caused blocking deadlocks, failing across 14 complex planning runs instead by serializing independent subtask executions.\n\nThe systems engineers configured a state machine graph engine which routes intermediate task states across 24 specialized sub-agent workers by evaluating branch edge conditions before transition. When a subtask finishes, the orchestrator verifies output schemas, allocating parallel child worker jobs by dispatching subtask requests across 12 remote RPC handlers instead.\n\nInstruct Cursor to benchmark graph execution latency across 30 concurrent asyncio workflows, and write 4 unit tests validating that failed sub-agent steps trigger state graph rollback handlers without losing shared memory state."
+    }
+]
+
+def main():
+    print(f"Total samples: {len(batch)}")
+    output_path = Path("scratch/subagent_batch_142.json")
+
+    # Step 1: Validate individual pairs
+    for i, pair in enumerate(batch):
+        v_ok, v_msg = validate_pair(pair, min_noise_layers=4)
+        if not v_ok:
+            print(f"Sample {i+1} FAILED validate_pair: {v_msg}")
+            sys.exit(1)
+
+        c_res, c_status = clean_sample(pair["raw_asr"], pair["refined_text"])
+        if c_status != "kept":
+            print(f"Sample {i+1} FAILED clean_sample: {c_status}")
+            sys.exit(1)
+
+        words = len(pair["refined_text"].split())
+        layers = count_active_noise_layers(pair["raw_asr"])
+        cnt = sum(layers.values())
+        print(f"Sample {i+1:02d}: {words:3d} words | {cnt}/6 layers | {v_msg} | {c_status}")
+
+    # Step 2: Validate batch diversity and invariants
+    b_ok, b_msg, b_stats = validate_batch(
+        batch, min_short=4, min_medium=6, min_long=10, min_noise_layers=4
+    )
+    if not b_ok:
+        print(f"Batch validation FAILED: {b_msg}")
+        sys.exit(1)
+
+    print("\nBatch Validation Stats:")
+    print(f"Tier counts: {b_stats}")
+    print(f"Avg noise layers: {b_stats['avg_noise_layers']}")
+    print(f"Noise layer distribution: {b_stats['noise_layer_distribution']}")
+
+    # Save to scratch/subagent_batch_142.json
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(batch, f, indent=2, ensure_ascii=False)
+    print(f"\nSuccessfully wrote verified batch to {output_path}")
+
+if __name__ == "__main__":
+    main()

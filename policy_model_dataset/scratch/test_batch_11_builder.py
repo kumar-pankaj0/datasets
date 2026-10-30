@@ -1,0 +1,109 @@
+import json
+import re
+import sys
+import os
+
+sys.path.append("code")
+from validator import validate_pair, validate_batch
+from cleaner import clean_sample
+
+batch_11 = [
+    # --- Short 1 (< 25 words) ---
+    {
+        "raw_asr": "right zero x thirty wait right zero x forty to the s t m thirty two window watchdog counter register buy updating the control register",
+        "refined_text": "Write 0x40 to the `STM32` window watchdog counter register by updating the control register."
+    },
+    # --- Short 2 (< 25 words) ---
+    {
+        "raw_asr": "set the r p twenty forty d m a ring size to four wait set it to eight instead buy updating the channel configur register",
+        "refined_text": "Set the `RP2040` `DMA` ring size to 8 instead by updating the channel configuration register."
+    },
+    # --- Medium 1 (25-90 words) ---
+    {
+        "raw_asr": "basically the e s p thirty two low power comparator triggered spurious wake up interrupts during deep sleep operat because the analog threshold lacked calibrat right sixteen to the comparator reference register buy updating the real time clock power domain controller",
+        "refined_text": "The `ESP32` low-power comparator triggered spurious wake-up interrupts during deep sleep operation because the analog threshold lacked calibration.\n\nWrite 16 to the comparator reference register by updating the real-time clock power domain controller."
+    },
+    # --- Medium 2 (25-90 words) ---
+    {
+        "raw_asr": "the n r f fifty two flash wear leveling failed during sector rotat because the non volatile storage driver reached four thousand erase cycles without triggering a swap sector allocat write two hundred fifty six to the sector metadata offset buy updating the flash descriptor table",
+        "refined_text": "The `nRF52` flash wear leveling failed during sector rotation because the non-volatile storage driver reached 4000 erase cycles without triggering a swap sector allocation.\n\nWrite 256 to the sector metadata offset by updating the flash descriptor table."
+    },
+    # --- Medium 3 (25-90 words) ---
+    {
+        "raw_asr": "the r i s c v c a n f d controller aborted bitrate switching during high speed transmiss because the data phase prescaler mismatched the nominal arbitrat clock set the data prescaler to two wait right four to the data timing register buy updating the nominal bit rate configur",
+        "refined_text": "The `RISC-V` `CAN-FD` controller aborted bitrate switching during high speed transmission because the data phase prescaler mismatched the nominal arbitration clock.\n\nWrite 4 to the data timing register by updating the nominal bit rate configuration."
+    },
+    # --- Long 1 (90+ words) ---
+    {
+        "raw_asr": "the s t m thirty two high speed analog acquisit system suffered buffer overrun errors during continuous sampling because the d m a cyclic buffer handler failed to service half transfer interrupts before the transfer complete flag asserted the circular d m a channel pushed twelve bit a d c samples into a five hundred twelve byte ring buffer in static r a m at two megasamples per second logic analyzer captures revealed that the interrupt service routine stalled on a mutex lock for twenty four wait stalled on a mutex lock for forty eight microseconds which caused the peripheral d m a controller to overwrite unprocessed samples um telemetry traces confirmed that the circular buffer pointer wrapped around before core zero cleared the half transfer interrupt pending flag in the status register we isolated the timing bottleneck buy profiling the direct memory access event queue under heavy load we eliminated the cyclic buffer overruns buy replacing the blocking mutex with double buffered circular memory pointers and splitting the processing workload across ping pong buffers we also updated the d m a control register buy setting the circular mode enable bit and clearing the transfer error interrupt mask to maintain continuous streaming without frame loss",
+        "refined_text": "The `STM32` high-speed analog acquisition system suffered buffer overrun errors during continuous sampling because the `DMA` cyclic buffer handler failed to service half-transfer interrupts before the transfer-complete flag asserted. The circular `DMA` channel pushed 12-bit `ADC` samples into a 512-byte ring buffer in static `RAM` at 2 megasamples per second. Logic analyzer captures revealed that the interrupt service routine stalled on a mutex lock for 48 microseconds, which caused the peripheral `DMA` controller to overwrite unprocessed samples.\n\nTelemetry traces confirmed that the circular buffer pointer wrapped around before core 0 cleared the half-transfer interrupt pending flag in the status register. We isolated the timing bottleneck by profiling the direct memory access event queue under heavy load.\n\nWe eliminated the cyclic buffer overruns by replacing the blocking mutex with double-buffered circular memory pointers and splitting the processing workload across ping-pong buffers. We also updated the `DMA` control register by setting the circular mode enable bit and clearing the transfer error interrupt mask to maintain continuous streaming without frame loss."
+    },
+    # --- Long 2 (90+ words) ---
+    {
+        "raw_asr": "the r p twenty forty embedded device failed u s b descriptor enumerat during host connection because the u s b device controller corrupted endpoint buffer descriptors during control transfer transactions when the host requested the sixty four byte device descriptor packet at u s b address zero the hardware state machine attempted to load descriptor bytes from unaligned static r a m wi re shark protocol traces showed that the host controller issued two wait issued three consecutive get descriptor requests and reset the bus after receiving truncated stall responses um hardware register inspection revealed that the endpoint control register cleared the buffer ready bit prematurely while the d m a controller was still writing the descriptor data packet the host transceiver detected a packet length mismatch on endpoint zero and flagged an invalid transaction error within sixteen milliseconds we resolved the enumerat failure buy aligning the u s b descriptor table on a two hundred fifty six byte boundary in dedicated dual port u s b r a m we also updated the endpoint buffer initializ sequence buy verifying the buffer available bit before arming control transfer responses which allows the host to complete device enumerat at twelve megabits per second",
+        "refined_text": "The `RP2040` embedded device failed `USB` descriptor enumeration during host connection because the `USB` device controller corrupted endpoint buffer descriptors during control transfer transactions. When the host requested the 64-byte device descriptor packet at `USB` address 0, the hardware state machine attempted to load descriptor bytes from unaligned static `RAM`. `Wireshark` protocol traces showed that the host controller issued 3 consecutive get descriptor requests and reset the bus after receiving truncated stall responses.\n\nHardware register inspection revealed that the endpoint control register cleared the buffer ready bit prematurely while the `DMA` controller was still writing the descriptor data packet. The host transceiver detected a packet length mismatch on endpoint 0 and flagged an invalid transaction error within 16 milliseconds.\n\nWe resolved the enumeration failure by aligning the `USB` descriptor table on a 256-byte boundary in dedicated dual-port `USB` `RAM`. We also updated the endpoint buffer initialization sequence by verifying the buffer available bit before arming control transfer responses, which allows the host to complete device enumeration at 12 megabits per second."
+    },
+    # --- Long 3 (90+ words) ---
+    {
+        "raw_asr": "the e s p thirty two environmental datalogger crashed during flash wear leveling operat because the non volatile storage partition driver exhausted available erase blocks in the active flash sector the storage subsystem logged sensor telemetry every five wait every ten seconds writing one hundred twenty eight bytes to s p i flash memory until the wear leveling cycle counter surpassed ninety thousand erase cycles on the primary partition j link debugger traces showed that the wear leveling engine attempted to rotate modified metadata into a retired block marked with a bad sector flag um telemetry confirmed that the flash memory controller triggered an unhandled cache error exception when reading block headers across erased sector boundaries because the driver failed to allocat a spare swap block from the wear leveling pool core zero entered a panic loop while holding the flash translation table lock we resolved the flash wear leveling crash buy expanding the wear leveling reserve partition to four dedicated swap sectors in external flash memory we also updated the non volatile storage driver buy implementing dynamic wear distribution across physical sectors and clearing stale block markers before writing updated allocat tables",
+        "refined_text": "The `ESP32` environmental datalogger crashed during flash wear leveling operations because the non-volatile storage partition driver exhausted available erase blocks in the active flash sector. The storage subsystem logged sensor telemetry every 10 seconds, writing 128 bytes to `SPI` flash memory until the wear-leveling cycle counter surpassed 90000 erase cycles on the primary partition. `J-Link` debugger traces showed that the wear leveling engine attempted to rotate modified metadata into a retired block marked with a bad sector flag.\n\nTelemetry confirmed that the flash memory controller triggered an unhandled cache error exception when reading block headers across erased sector boundaries. Because the driver failed to allocate a spare swap block from the wear-leveling pool, core 0 entered a panic loop while holding the flash translation table lock.\n\nWe resolved the flash wear leveling crash by expanding the wear-leveling reserve partition to 4 dedicated swap sectors in external flash memory. We also updated the non-volatile storage driver by implementing dynamic wear distribution across physical sectors and clearing stale block markers before writing updated allocation tables."
+    },
+    # --- Long 4 (90+ words) ---
+    {
+        "raw_asr": "the n r f fifty two wireless sensor beacon suffered premature battery deplet because the low power analog comparator generated spurious wake up interrupts during system deep sleep the battery monitoring circuit tracked supply rail voltage fluctuations through an external analog input pin tied to the internal comparator peripheral oscilloscope measurements showed that high frequency switching noise on the power rail induced twenty four millivolts of ripple which crossed the comparator reference threshold and woke the processor every four wait every eight milliseconds um hardware trace logs revealed that the comparator event register asserted the wake up flag without digital hysteresis filtering enabled in peripheral control registers this unintended wake up cycle prevented the system power management module from staying in two microamp sleep mode we fixed the excessive power deplet buy configuring the low power comparator hysteresis register with a fifty millivolt window and routing the reference input through an internal low pass filter we also modified the power manager interrupt handler buy clearing pending comparator events before entering sleep which stabilized the standby current at three microamps",
+        "refined_text": "The `nRF52` wireless sensor beacon suffered premature battery depletion because the low-power analog comparator generated spurious wake-up interrupts during system deep sleep. The battery monitoring circuit tracked supply rail voltage fluctuations through an external analog input pin tied to the internal comparator peripheral. Oscilloscope measurements showed that high-frequency switching noise on the power rail induced 24 millivolts of ripple, which crossed the comparator reference threshold and woke the processor every 8 milliseconds.\n\nHardware trace logs revealed that the comparator event register asserted the wake-up flag without digital hysteresis filtering enabled in peripheral control registers. This unintended wake-up cycle prevented the system power management module from staying in 2-microamp sleep mode.\n\nWe fixed the excessive power depletion by configuring the low-power comparator hysteresis register with a 50-millivolt window and routing the reference input through an internal low-pass filter. We also modified the power manager interrupt handler by clearing pending comparator events before entering sleep, which stabilized the standby current at 3 microamps."
+    },
+    # --- Long 5 (90+ words) ---
+    {
+        "raw_asr": "the r i s c v powertrain microcontroller dropped c a n f d communicat frames during high speed bitrate switching because the transceiver transmitter delay compensat offset was miscalculated in the peripheral timing registers when the c a n f d controller switched from the nominal two wait nominal one megabit arbitrat phase to the five megabit data payload phase the loop delay between the transmit pin and receive pin exceeded the configured secondary sample point wi re shark c a n bus traces captured sixty four consecutive bit error flags caused buy sample point mismatch during data frame transmiss um diagnostic logs showed that the c a n controller asserted the error passive interrupt after the transmit error counter climbed past one hundred twenty eight events the transceiver delay measurement unit recorded an internal propagation delay of one hundred eighty nanoseconds while the delay compensat register remained fixed at forty nanoseconds we corrected the bitrate switching failures buy programming the transmitter delay compensat offset register to one hundred sixty nanoseconds in the c a n f d core we also adjusted the data phase prescaler and nominal bit timing registers buy shifting the secondary sample point to seventy five percent which eliminated bus arbitrat drops and restored reliable frame transmiss",
+        "refined_text": "The `RISC-V` powertrain microcontroller dropped `CAN-FD` communication frames during high speed bitrate switching because the transceiver transmitter delay compensation offset was miscalculated in the peripheral timing registers. When the `CAN-FD` controller switched from the nominal 1 megabit arbitration phase to the 5 megabit data payload phase, the loop delay between the transmit pin and receive pin exceeded the configured secondary sample point. `Wireshark` CAN bus traces captured 64 consecutive bit error flags caused by sample point mismatch during data frame transmission.\n\nDiagnostic logs showed that the `CAN` controller asserted the error passive interrupt after the transmit error counter climbed past 128 events. The transceiver delay measurement unit recorded an internal propagation delay of 180 nanoseconds, while the delay compensation register remained fixed at 40 nanoseconds.\n\nWe corrected the bitrate switching failures by programming the transmitter delay compensation offset register to 160 nanoseconds in the `CAN-FD` core. We also adjusted the data phase prescaler and nominal bit timing registers by shifting the secondary sample point to 75 percent, which eliminated bus arbitration drops and restored reliable frame transmission."
+    }
+]
+
+def main():
+    print("Testing batch_11 samples...")
+    all_ok = True
+    tier_counts = {"short": 0, "medium": 0, "long": 0}
+    
+    for i, s in enumerate(batch_11, 1):
+        v_ok, v_reason = validate_pair(s)
+        c_res, c_reason = clean_sample(s["raw_asr"], s["refined_text"])
+        
+        words = len(s["refined_text"].split())
+        raw_words = len(s["raw_asr"].split())
+        ratio = words / max(1, raw_words)
+        
+        if words < 25:
+            tier = "Short"
+            tier_counts["short"] += 1
+        elif words <= 90:
+            tier = "Medium"
+            tier_counts["medium"] += 1
+        else:
+            tier = "Long"
+            tier_counts["long"] += 1
+            
+        status = "PASS" if (v_ok and c_res is not None) else "FAIL"
+        if not (v_ok and c_res is not None):
+            all_ok = False
+        print(f"[{status}] Sample {i} ({tier}, {words} words, raw: {raw_words}, ratio: {ratio:.2f})")
+        if not v_ok:
+            print(f"  validator fail: {v_reason}")
+        if c_res is None:
+            print(f"  cleaner fail: {c_reason}")
+            
+    b_ok, b_reason, b_counts = validate_batch(batch_11, min_short=2, min_medium=3, min_long=5)
+    print(f"\nBatch validation: {'PASS' if b_ok else 'FAIL'} - {b_reason}")
+    print(f"Counts: {b_counts}")
+    
+    if all_ok and b_ok:
+        out_path = "scratch/subagent_batch_11.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(batch_11, f, indent=2, ensure_ascii=False)
+        print(f"\nSUCCESS: Verified batch saved to {out_path}")
+    else:
+        print("\nFAILURE: One or more checks failed.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

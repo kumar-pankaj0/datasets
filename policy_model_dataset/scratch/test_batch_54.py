@@ -1,0 +1,185 @@
+import json
+import re
+import sys
+from pathlib import Path
+
+# Add code directory to path
+sys.path.append("code")
+from validator import validate_pair, validate_batch
+from cleaner import clean_sample
+
+batch = [
+    # --- TIER 1: SHORT (< 25 words) - 4 samples ---
+    # Sample 1: STM32H7 PLL multiplier configuration
+    {
+        "raw_asr": "uh configur the p l l one multiplier buy writing one hundred sixty into the clock division register",
+        "refined_text": "Configure the PLL1 multiplier by writing 160 into the clock division register."
+    },
+    # Sample 2: RP2040 PIO clock divider register
+    {
+        "raw_asr": "um set the p i o zero clock divider buy loading register zero x two zero with thirty two",
+        "refined_text": "Set the PIO0 clock divider by loading register 0x20 with 32."
+    },
+    # Sample 3: nRF52833 SAADC gain calibration
+    {
+        "raw_asr": "calibrat the s a a d c gain buy loading one into the channel input control register",
+        "refined_text": "Calibrate the SAADC gain by loading 1 into the channel input control register."
+    },
+    # Sample 4: RISC-V PMP address register
+    {
+        "raw_asr": "right zero x eight zero zero zero zero zero zero zero into the p m p addr zero register buy using c s r write",
+        "refined_text": "Write 0x80000000 into the pmpaddr0 register by using CSR write."
+    },
+
+    # --- TIER 2: MEDIUM (25 to 89 words) - 6 samples ---
+    # Sample 5: I3C dynamic target address assignment
+    {
+        "raw_asr": "uh assign the dynamic target address buy broadcasting the enter dynamic address assign command on the i three c bus right zero x zero eight wait right zero x one eight instead into the target address register the bus master completes target enumeration across the secondary devices",
+        "refined_text": "Assign the dynamic target address by broadcasting the enter dynamic address assign command on the I3C bus. Write 0x18 instead into the target address register.\n\nThe bus master completes target enumeration across the secondary devices."
+    },
+    # Sample 6: QSPI fast read opcode and dummy cycles
+    {
+        "raw_asr": "um configur the q s p i communication control register buy setting eight dummy clock cycles four fast read operations right zero x e b into the instruction register wait right zero x e c instead no wait right zero x e b instead the flash memory controller streams execute in place instructions directly two the c p u cache",
+        "refined_text": "Configure the QSPI communication control register by setting 8 dummy clock cycles for fast read operations. Write 0xEB instead into the instruction register.\n\nThe flash memory controller streams execute in place instructions directly to the CPU cache."
+    },
+    # Sample 7: USB DFU bootloader detachment timer
+    {
+        "raw_asr": "basically arm the u s b device firmware upgrade detachment timer buy writing one thousand into the detach timeout register right two five zero wait right five zero zero instead into the poll timeout field the bootloader transitions two dfu mode buy executing a software reset vector jump",
+        "refined_text": "Arm the USB device firmware upgrade detachment timer by writing 1000 into the detach timeout register. Write 500 instead into the poll timeout field.\n\nThe bootloader transitions to DFU mode by executing a software reset vector jump."
+    },
+    # Sample 8: Zephyr RTOS clock tree prescaler binding
+    {
+        "raw_asr": "uh configur the zephyr clock tree prescaler buy updating the system clock divider in the peripheral binding right sixteen into the bus divider field wait right thirty two instead the kernel provides accurate microsecond timekeeping buy stabilizing peripheral bus frequencies",
+        "refined_text": "Configure the Zephyr clock tree prescaler by updating the system clock divider in the peripheral binding. Write 32 instead into the bus divider field.\n\nThe kernel provides accurate microsecond timekeeping by stabilizing peripheral bus frequencies."
+    },
+    # Sample 9: PMBus digital power supply target voltage
+    {
+        "raw_asr": "calibrat the p m b u s digital power supply output voltage buy sending command code zero x two one right eight zero zero wait right nine zero zero instead into the target millivolt register the switching regulator locks output rail voltage buy reading dynamic feedback telemetry",
+        "refined_text": "Calibrate the PMBus digital power supply output voltage by sending command code 0x21. Write 900 instead into the target millivolt register.\n\nThe switching regulator locks output rail voltage by reading dynamic feedback telemetry."
+    },
+    # Sample 10: Ethernet PHY RMII transceiver control register
+    {
+        "raw_asr": "okay so initializ the ethernet p h y transceiver buy reading register zero x zero zero over the m d i o serial interface right zero x zero one into the r m i i control register wait right zero x zero five instead the network controller establishes full duplex link communicat across the physical layer",
+        "refined_text": "Initialize the Ethernet PHY transceiver by reading register 0x00 over the MDIO serial interface. Write 0x05 instead into the RMII control register.\n\nThe network controller establishes full duplex link communication across the physical layer."
+    },
+
+    # --- TIER 3: LONG (90+ words) - 10 samples ---
+    # Sample 11: STM32H7 dual-core shared RAM and HSEM lockup
+    {
+        "raw_asr": "um our dual core stm thirty two h seven industrial gateway board experienced recurring memory corruption and inter core lockups during high rate sensor streaming between the cortex m seven core and the cortex m four core we attached a segger j link debugger two the swd interface and observed that the m four core entered an infinite spin loop while attempting two lock the shared hardware semaphore both cores read and write telemetry frames in shared d two sram four memory without synchronizat because the firmware omitted data memory barrier instructions during buffer pointer handoff um we eliminated the inter core deadlock buy implementing a non blocking two step hardware semaphore acquisition protocol configur the hardware semaphore register buy enabling the two step lock sequence on semaphore channel four right thirty two wait right sixty four instead into the lock retry counter register two limit spinlock acquisition attempts basically we also inserted a data memory barrier instruction before releasing the semaphore and relocated the circular buffer two un cached sram right zero x zero eight into the shared memory control register two clear stale cache lines after configuring the two step lock and memory barriers the dual core communications pipeline sustained five thousand message transfers per second without inter core deadlocks or frame corrupt",
+        "refined_text": "Our dual-core STM32H7 industrial gateway board experienced recurring memory corruption and inter-core lockups during high-rate sensor streaming between the Cortex-M7 core and the Cortex-M4 core. We attached a SEGGER J-Link debugger to the SWD interface and observed that the M4 core entered an infinite spin loop while attempting to lock the shared hardware semaphore. Both cores read and write telemetry frames in shared D2 SRAM4 memory without synchronization because the firmware omitted data memory barrier instructions during buffer pointer handoff.\n\nWe eliminated the inter-core deadlock by implementing a non-blocking two-step hardware semaphore acquisition protocol. Configure the hardware semaphore register by enabling the two-step lock sequence on semaphore channel 4. Write 64 instead into the lock retry counter register to limit spinlock acquisition attempts.\n\nWe also inserted a data memory barrier instruction before releasing the semaphore and relocated the circular buffer to un-cached SRAM. Write 0x08 into the shared memory control register to clear stale cache lines. After configuring the two-step lock and memory barriers, the dual-core communications pipeline sustained 5000 message transfers per second without inter-core deadlocks or frame corruption."
+    },
+    # Sample 12: RP2040 PIO WS2812 LED DMA FIFO stalls
+    {
+        "raw_asr": "okay so our r p two zero four zero smart lighting controller suffered frequent display freezing and corrupted led color data during high speed animation streaming across thirty two output channels we connected a logic analyzer two the p i o output pin and verified that the p i o state machine stalled because the d m a controller failed two replenish the transmit fifo buffer in time the firmware triggered d m a transfers buy timer interrupts rather than peripheral request pacing causing data fifo underflow during heavy c p u background processing um we eliminated led streaming stalls buy rebinding the d m a channel directly two the p i o peripheral request signal configur the p i o state machine buy enabling auto pull with thirty two bit threshold right one two eight wait right two five six instead into the d m a transfer count register two double the word transfer burst size basically we also configur the p i o clock divider buy setting thirty two into the integer divisor field right zero x zero one into the state machine execution control register two keep execution synchronized with d m a bursts after activating peripheral paced transfers and tuning the clock divider the lighting controller maintained continuous sixty frames per second updates without fifo starvation or glitching",
+        "refined_text": "Our RP2040 smart lighting controller suffered frequent display freezing and corrupted LED color data during high-speed animation streaming across 32 output channels. We connected a logic analyzer to the PIO output pin and verified that the PIO state machine stalled because the DMA controller failed to replenish the transmit FIFO buffer in time. The firmware triggered DMA transfers by timer interrupts rather than peripheral request pacing, causing data FIFO underflow during heavy CPU background processing.\n\nWe eliminated LED streaming stalls by rebinding the DMA channel directly to the PIO peripheral request signal. Configure the PIO state machine by enabling auto-pull with 32-bit threshold. Write 256 instead into the DMA transfer count register to double the word transfer burst size.\n\nWe also configured the PIO clock divider by setting 32 into the integer divisor field. Write 0x01 into the state machine execution control register to keep execution synchronized with DMA bursts. After activating peripheral-paced transfers and tuning the clock divider, the lighting controller maintained continuous 60 frames per second updates without FIFO starvation or glitching."
+    },
+    # Sample 13: ESP32-C3 RISC-V hardware secure boot and eFuse key protection
+    {
+        "raw_asr": "uh our e s p thirty two c three industrial edge monitor failed two boot during field firmware provisioning buy throwing a secure boot verification error in the boot rom console we connected a serial terminal two the debug uart and confirmed that the hardware cryptographic engine rejected the application signature digest because the e f u s e block three key was partially exposed buy missing write protection bits the device bootloader entered an endless reset loop after calculating an invalid sha two five six image digest um we resolved secure boot verification buy programming the permanent key protection bits inside e f u s e block zero configur the e f u s e controller buy setting the read disable bit four key block three right zero x zero two wait right zero x zero four instead into the e f u s e write disable register two permanently lock the secret key against modification basically we also configur the secure boot control register buy writing value one into the hardware verification enable field right zero x zero one into the boot status register two signal successful key burn after burning the write protection bits and enabling hardware validation the edge monitor booted authenticated firmware images reliably without boot rom resets or cryptographic errors",
+        "refined_text": "Our ESP32-C3 industrial edge monitor failed to boot during field firmware provisioning by throwing a secure boot verification error in the boot ROM console. We connected a serial terminal to the debug UART and confirmed that the hardware cryptographic engine rejected the application signature digest because the eFuse block 3 key was partially exposed by missing write-protection bits. The device bootloader entered an endless reset loop after calculating an invalid SHA-256 image digest.\n\nWe resolved secure boot verification by programming the permanent key protection bits inside eFuse block 0. Configure the eFuse controller by setting the read-disable bit for key block 3. Write 0x04 instead into the eFuse write disable register to permanently lock the secret key against modification.\n\nWe also configured the secure boot control register by writing value 1 into the hardware verification enable field. Write 0x01 into the boot status register to signal successful key burn. After burning the write-protection bits and enabling hardware validation, the edge monitor booted authenticated firmware images reliably without boot ROM resets or cryptographic errors."
+    },
+    # Sample 14: Automotive CAN-FD controller TDC offset skew
+    {
+        "raw_asr": "basically our automotive gateway ecu experienced repetitive bus error interrupts and frame aborts during c a n f d data phase switching at five megabits per second we connected an oscilloscope differential probe two the can bus lines and identified severe bit sampling point skew caused buy propagation delay asymmetry in the physical transceiver the c a n controller failed two lock the secondary sample point because transmitter delay compensation was disabled in firmware um we eliminated data frame corruption buy activating automatic transmitter delay compensation inside the c a n f d protocol engine configur the transmitter delay compensation control register buy writing value one into the t d c enable bit right eight wait right sixteen instead into the t d c offset register two align the secondary sample point with the bit center basically we also adjusted the data phase segment register buy writing twelve into the time segment one field right zero x zero two into the error control register two enable error warning interrupts after configuring transmitter delay compensation and sample point offsets the ecu communicated at five megabits per second without bit errors or frame drops across high temperature cycles",
+        "refined_text": "Our automotive gateway ECU experienced repetitive bus error interrupts and frame aborts during CAN-FD data phase switching at 5 megabits per second. We connected an oscilloscope differential probe to the CAN bus lines and identified severe bit sampling point skew caused by propagation delay asymmetry in the physical transceiver. The CAN controller failed to lock the secondary sample point because transmitter delay compensation was disabled in firmware.\n\nWe eliminated data frame corruption by activating automatic transmitter delay compensation inside the CAN-FD protocol engine. Configure the transmitter delay compensation control register by writing value 1 into the TDC enable bit. Write 16 instead into the TDC offset register to align the secondary sample point with the bit center.\n\nWe also adjusted the data phase segment register by writing 12 into the time segment 1 field. Write 0x02 into the error control register to enable error warning interrupts. After configuring transmitter delay compensation and sample point offsets, the ECU communicated at 5 megabits per second without bit errors or frame drops across high temperature cycles."
+    },
+    # Sample 15: nRF5340 dual-core BLE audio IPC ring buffer dropouts
+    {
+        "raw_asr": "okay so our n r f fifty three forty wireless audio headset suffered periodic sound stuttering and missing audio packets during low latency b l e broadcast playback we attached an ellisys bluetooth analyzer and captured j link systemview thread execution traces which revealed that the application core missed audio data frames forwarded buy the network core the inter processor communication interrupt handler on the application core was blocked buy a high priority display driver thread causing the shared audio ring buffer two overflow um we resolved audio streaming dropouts buy elevating the i p c interrupt priority and expanding the shared message ring buffer configur the n v i c interrupt priority register buy assigning preemption priority level one two the i p c interrupt vector right two five six wait right five one two instead into the shared ring buffer length field two provide adequate buffering headroom basically we also configur the i p c peripheral channel buy writing four into the channel send mask register right zero x zero one into the event acknowledge register two confirm packet reception without delay after adjusting interrupt priorities and doubling buffer allocation the headset maintained flawless audio streaming without packet dropouts or buffer underruns during continuous playback",
+        "refined_text": "Our nRF5340 wireless audio headset suffered periodic sound stuttering and missing audio packets during low-latency BLE broadcast playback. We attached an Ellisys Bluetooth analyzer and captured J-Link SystemView thread execution traces, which revealed that the application core missed audio data frames forwarded by the network core. The inter-processor communication interrupt handler on the application core was blocked by a high-priority display driver thread, causing the shared audio ring buffer to overflow.\n\nWe resolved audio streaming dropouts by elevating the IPC interrupt priority and expanding the shared message ring buffer. Configure the NVIC interrupt priority register by assigning preemption priority level 1 to the IPC interrupt vector. Write 512 instead into the shared ring buffer length field to provide adequate buffering headroom.\n\nWe also configured the IPC peripheral channel by writing 4 into the channel send mask register. Write 0x01 into the event acknowledge register to confirm packet reception without delay. After adjusting interrupt priorities and doubling buffer allocation, the headset maintained flawless audio streaming without packet dropouts or buffer underruns during continuous playback."
+    },
+    # Sample 16: I3C bus hot-join arbitration lockups
+    {
+        "raw_asr": "um our industrial condition monitoring hub experienced continuous bus freezes whenever a hot pluggable vibration sensor connected two the i three c sensor bus during active data acquisition we connected an i three c protocol analyzer two the serial clock and serial data lines and verified that the sensor issued an unsolicited hot join request while the bus master was broadcasting dynamic address assignment commands the simultaneous request corrupted bus arbitration and locked the bus state machine in a perpetual restart state um we resolved hot join bus lockups buy masking hot join requests during broadcast enumeration and reserving dedicated join time slots configur the i three c bus control register buy setting the hot join disable bit right zero x one zero wait right zero x two zero instead into the bus interrupt mask register two ignore spontaneous hot join requests during sensor streaming basically we also configur the bus idle timing register buy writing forty into the bus free condition duration field right zero x zero a into the target provisional address register two complete target binding after updating the interrupt mask and free timing registers the telemetry hub detected and bound hot joined sensors smoothly without arbitration conflicts or bus lockups",
+        "refined_text": "Our industrial condition monitoring hub experienced continuous bus freezes whenever a hot-pluggable vibration sensor connected to the I3C sensor bus during active data acquisition. We connected an I3C protocol analyzer to the serial clock and serial data lines and verified that the sensor issued an unsolicited hot-join request while the bus master was broadcasting dynamic address assignment commands. The simultaneous request corrupted bus arbitration and locked the bus state machine in a perpetual restart state.\n\nWe resolved hot-join bus lockups by masking hot-join requests during broadcast enumeration and reserving dedicated join time slots. Configure the I3C bus control register by setting the hot-join disable bit. Write 0x20 instead into the bus interrupt mask register to ignore spontaneous hot-join requests during sensor streaming.\n\nWe also configured the bus idle timing register by writing 40 into the bus free condition duration field. Write 0x0A into the target provisional address register to complete target binding. After updating the interrupt mask and free timing registers, the telemetry hub detected and bound hot-joined sensors smoothly without arbitration conflicts or bus lockups."
+    },
+    # Sample 17: Cortex-M4 HardFault debugging with BFAR and MPU
+    {
+        "raw_asr": "uh our flight navigation avionics board crashed into an unhandled hard fault during cold boot initialization across multiple temperature trials we connected a g d b debugger over open o c d and dumped the core fault status registers from memory the configurable fault status register indicated an imprecise bus fault that escalated two a hard fault because the d m a controller attempted an unaligned thirty two bit memory read from an unmapped peripheral register address um we isolated the fault location buy reading the bus fault address register and forcing precise data access violations in the cortex m four core configur the auxiliary control register buy setting the disable imprecise bus fault bit right zero x four zero zero two zero zero zero zero into the memory protection unit base address register wait right zero x four zero zero two zero zero zero zero instead basically we also configur the m p u region attributes buy writing thirty two wait right sixty four instead into the region size field right zero x zero three into the access permission register two restrict peripheral access after activating precise fault trapping and configuring m p u regions the avionics board booted cleanly without hard fault exceptions or memory protection faults",
+        "refined_text": "Our flight navigation avionics board crashed into an unhandled hard fault during cold boot initialization across multiple temperature trials. We connected a GDB debugger over OpenOCD and dumped the core fault status registers from memory. The configurable fault status register indicated an imprecise bus fault that escalated to a hard fault because the DMA controller attempted an unaligned 32-bit memory read from an unmapped peripheral register address.\n\nWe isolated the fault location by reading the bus fault address register and forcing precise data access violations in the Cortex-M4 core. Configure the auxiliary control register by setting the disable imprecise bus fault bit. Write 0x40020000 instead into the memory protection unit base address register.\n\nWe also configured the MPU region attributes by writing 64 instead into the region size field. Write 0x03 into the access permission register to restrict peripheral access. After activating precise fault trapping and configuring MPU regions, the avionics board booted cleanly without hard fault exceptions or memory protection faults."
+    },
+    # Sample 18: i.MX RT1060 FlexSPI XiP cache thrashing
+    {
+        "raw_asr": "basically our medical infusion pump display controller experienced severe interface latency and dropped frames whenever motor control interrupt routines executed from external q s p i flash memory we used a segger j link debugger two profile instruction execution cycles and observed heavy l one cache misses occurring inside the interrupt service routine the cortex m seven core stalled on external flash read cycles because time critical motor control algorithms executed directly from serial flash without caching optimization um we eliminated cache miss latency buy relocating the interrupt vector table and critical control loops into internal tightly coupled memory configur the system control block buy writing zero x zero zero zero zero zero zero zero zero into the vector table offset register right thirty two wait right sixty four instead into the flex s p i prefetch buffer size register two optimize linear burst fetches basically we also configur the instruction cache controller buy enabling the prefetch buffer bit right zero x zero one into the cache maintenance register two invalidate stale cache entries after moving critical functions two t c m and enabling flash prefetching the controller executed motor interrupts within four microseconds without display stuttering",
+        "refined_text": "Our medical infusion pump display controller experienced severe interface latency and dropped frames whenever motor control interrupt routines executed from external QSPI flash memory. We used a SEGGER J-Link debugger to profile instruction execution cycles and observed heavy L1 cache misses occurring inside the interrupt service routine. The Cortex-M7 core stalled on external flash read cycles because time-critical motor control algorithms executed directly from serial flash without caching optimization.\n\nWe eliminated cache miss latency by relocating the interrupt vector table and critical control loops into internal tightly coupled memory. Configure the system control block by writing 0x00000000 into the vector table offset register. Write 64 instead into the FlexSPI prefetch buffer size register to optimize linear burst fetches.\n\nWe also configured the instruction cache controller by enabling the prefetch buffer bit. Write 0x01 into the cache maintenance register to invalidate stale cache entries. After moving critical functions to TCM and enabling flash prefetching, the controller executed motor interrupts within 4 microseconds without display stuttering."
+    },
+    # Sample 19: SPI ADC DRDY edge jitter and sampling synchronization
+    {
+        "raw_asr": "okay so our industrial power quality monitor produced intermittent voltage measurement gaps and missed sampling cycles when reading data from the external multi channel s p i analog to digital converter we hooked an oscilloscope two the serial clock and data ready lines and found that the microcontroller missed data ready falling edge interrupts during fast sampling the s p i clock polarity and phase settings caused edge jitter on the interrupt line leaving the d m a transfer channel waiting four unasserted conversion pulses um we restored sampling synchronization buy reconfiguring the s p i peripheral mode and binding the data ready pin two a dedicated external interrupt channel configur the s p i control register buy setting clock polarity two zero and clock phase two one right four wait right six instead into the sample rate divider register two establish four thousand conversions per second basically we also configur the n v i c interrupt controller buy assigning priority level two two the data ready pin vector right zero x zero six into the clock generation register two stabilize internal adc timing after correcting the clock mode and sample rate registers the power monitor captured continuous voltage waveforms without missed conversion pulses or d m a stalls",
+        "refined_text": "Our industrial power quality monitor produced intermittent voltage measurement gaps and missed sampling cycles when reading data from the external multi-channel SPI analog-to-digital converter. We hooked an oscilloscope to the serial clock and data ready lines and found that the microcontroller missed data ready falling edge interrupts during fast sampling. The SPI clock polarity and phase settings caused edge jitter on the interrupt line, leaving the DMA transfer channel waiting for unasserted conversion pulses.\n\nWe restored sampling synchronization by reconfiguring the SPI peripheral mode and binding the data ready pin to a dedicated external interrupt channel. Configure the SPI control register by setting clock polarity to 0 and clock phase to 1. Write 6 instead into the sample rate divider register to establish 4000 conversions per second.\n\nWe also configured the NVIC interrupt controller by assigning priority level 2 to the data ready pin vector. Write 0x06 into the clock generation register to stabilize internal ADC timing. After correcting the clock mode and sample rate registers, the power monitor captured continuous voltage waveforms without missed conversion pulses or DMA stalls."
+    },
+    # Sample 20: Automotive LIN bus wake-up pulse timing violation
+    {
+        "raw_asr": "uh our automotive door control unit failed two wake up the central gateway module from low power sleep mode during remote key fob unlock events we monitored the single wire l i n bus with a bus transceiver analyzer and captured pulse timing measurements on the wake up line the microcontroller g p i o pin generated a dominant wake up pulse duration of one hundred fifty microseconds which the gateway transceiver rejected as transient line noise the l i n specification requires a minimum dominant pulse width of two hundred fifty microseconds four sleep wake up signals um we resolved the wake up rejection buy generating the wake up pulse using a hardware timer compare channel instead of software g p i o toggling configur the low power timer register buy writing four into the prescaler field right one five zero wait right three zero zero instead into the timer reload register two generate a three hundred microsecond dominant pulse basically we also configur the transceiver sleep filter buy setting fifty microseconds into the wake up debounce register right zero x one two into the l i n mode register two return the physical transceiver two normal active state after updating the timer reload and filter registers the door control unit woke up the vehicle gateway reliably on every unlock request without pulse rejections or communication failures",
+        "refined_text": "Our automotive door control unit failed to wake up the central gateway module from low-power sleep mode during remote key fob unlock events. We monitored the single-wire LIN bus with a bus transceiver analyzer and captured pulse timing measurements on the wake-up line. The microcontroller GPIO pin generated a dominant wake-up pulse duration of 150 microseconds, which the gateway transceiver rejected as transient line noise. The LIN specification requires a minimum dominant pulse width of 250 microseconds for sleep wake-up signals.\n\nWe resolved the wake-up rejection by generating the wake-up pulse using a hardware timer compare channel instead of software GPIO toggling. Configure the low-power timer register by writing 4 into the prescaler field. Write 300 instead into the timer reload register to generate a 300 microsecond dominant pulse.\n\nWe also configured the transceiver sleep filter by setting 50 into the wake-up debounce register. Write 0x12 into the LIN mode register to return the physical transceiver to normal active state. After updating the timer reload and filter registers, the door control unit woke up the vehicle gateway reliably on every unlock request without pulse rejections or communication failures."
+    }
+]
+
+def main():
+    print(f"Auditing {len(batch)} samples for Batch 54...\n")
+
+    # Load eval set for leakage check
+    eval_file = Path("sft_eval.json")
+    with open(eval_file, "r", encoding="utf-8") as f:
+        eval_data = json.load(f)
+    eval_raws = {e["raw_asr"].strip().lower() for e in eval_data}
+    eval_refs = {e["refined_text"].strip() for e in eval_data}
+
+    all_ok = True
+    tier_counts = {"short": 0, "medium": 0, "long": 0}
+
+    for i, s in enumerate(batch, 1):
+        raw = s.get("raw_asr", "")
+        ref = s.get("refined_text", "")
+
+        # Check leakage
+        if raw.strip().lower() in eval_raws:
+            print(f"Sample {i:02d}: LEAKAGE detected against sft_eval (raw_asr)!")
+            all_ok = False
+        if ref.strip() in eval_refs:
+            print(f"Sample {i:02d}: LEAKAGE detected against sft_eval (refined_text)!")
+            all_ok = False
+
+        v_ok, v_reason = validate_pair(s)
+        c_res, c_reason = clean_sample(raw, ref)
+
+        words = len(ref.split())
+        raw_words = len(raw.split())
+        ratio = words / max(1, raw_words)
+
+        if words < 25:
+            tier = "SHORT"
+            tier_counts["short"] += 1
+        elif words < 90:
+            tier = "MEDIUM"
+            tier_counts["medium"] += 1
+        else:
+            tier = "LONG"
+            tier_counts["long"] += 1
+
+        if not (v_ok and c_res is not None):
+            all_ok = False
+            print(f"Sample {i:02d} [{tier:6s}]: FAIL - validator: {v_reason}, cleaner: {c_reason}")
+        else:
+            print(f"Sample {i:02d} [{tier:6s}]: PASS - words={words:3d}, raw_words={raw_words:3d}, ratio={ratio:.2f}")
+
+    print("\n--- Tier Counts ---")
+    print(f"Short:  {tier_counts['short']} / 4")
+    print(f"Medium: {tier_counts['medium']} / 6")
+    print(f"Long:   {tier_counts['long']} / 10")
+
+    b_ok, b_reason, b_tiers = validate_batch(batch, min_short=4, min_medium=6, min_long=10)
+    print(f"\nvalidate_batch: {b_reason} (passed={b_ok}, returned_tiers={b_tiers})")
+
+    if all_ok and b_ok:
+        out_path = Path("scratch/subagent_batch_54.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(batch, f, indent=2, ensure_ascii=False)
+        print(f"\nAll 20 samples passed! Saved to {out_path}")
+    else:
+        print("\nBatch 54 failed validation checks.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

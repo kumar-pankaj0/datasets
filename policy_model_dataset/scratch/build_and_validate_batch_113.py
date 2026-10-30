@@ -1,0 +1,201 @@
+import json
+import re
+import sys
+import os
+from pathlib import Path
+
+# Add code directory to path
+sys.path.insert(0, os.path.abspath("code"))
+
+from validator import validate_pair, validate_batch
+from cleaner import clean_sample
+
+# Load eval set for leakage check
+eval_file = Path("sft_eval.json")
+with open(eval_file, "r", encoding="utf-8") as f:
+    eval_data = json.load(f)
+eval_raws = {e["raw_asr"].strip().lower() for e in eval_data}
+eval_refs = {e["refined_text"].strip() for e in eval_data}
+
+samples = [
+    # =========================================================================
+    # Tier 1: Short Utterances (< 25 words) - Exactly 4 samples (Samples 1-4)
+    # Exactly 1 grammatically complete sentence. Zero newlines. Max 1 cut-word.
+    # Content words >= 6-8. Avoid dotted filenames and internal periods.
+    # Avoid backticks.
+    # =========================================================================
+
+    # Sample 1: Domain 1 (Story Grooming) - Point estimation & acceptance criteria
+    {
+        "raw_asr": "um assign eight story points two the ticket buy refin acceptance criteria four user session expiration",
+        "refined_text": "Assign 8 story points to the ticket by refining acceptance criteria for user session expiration."
+    },
+
+    # Sample 2: Domain 1 (Sprint Planning) - Sprint capacity allocation
+    {
+        "raw_asr": "uh allocat forty story points across twelve backlog tasks four our upcoming platform delivery cycle",
+        "refined_text": "Allocate 40 story points across 12 backlog tasks for our upcoming platform delivery cycle."
+    },
+
+    # Sample 3: Domain 2 (Daily Standups) - Standup blocker update
+    {
+        "raw_asr": "basically resolve the staging deployment blocker buy restart three worker nodes inside the testing cluster",
+        "refined_text": "Resolve the staging deployment blocker by restarting 3 worker nodes inside the testing cluster."
+    },
+
+    # Sample 4: Domain 2 (Async Standup / Slack Sync) - Async standup status ping
+    {
+        "raw_asr": "um finish five story points buy merg the authentication pull request into the staging branch",
+        "refined_text": "Finish 5 story points by merging the authentication pull request into the staging branch."
+    },
+
+    # =========================================================================
+    # Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples (Samples 5-10)
+    # 1 to 3 grammatically complete sentences. Natural \n\n breaks. Max \n\n: words // 25.
+    # Avoid backticks.
+    # =========================================================================
+
+    # Sample 5: Domain 1 (Story Grooming) - Database partitioning story grooming
+    {
+        "raw_asr": "during backlog grooming our squad split the telemetry archival ticket into four separate subtasks wait estimat five story points four the retention cleanup worker inside telemetry underscore service dot py instead um right two unit tests validating that partition drops succeed across thirty days",
+        "refined_text": "During backlog grooming our squad split the telemetry archival ticket into 4 separate subtasks, estimating 5 story points for the retention cleanup worker inside telemetry_service.py instead.\n\nWrite 2 unit tests validating that partition drops succeed across 30 days."
+    },
+
+    # Sample 6: Domain 1 (Sprint Planning) - Sprint velocity & capacity planning
+    {
+        "raw_asr": "in sprint planning our engineering team committed forty story points across six feature stories four sprint thirty two wait adjust team velocity buy accounting four three engineer vacations instead um reserv eight story points four production support and triage rotation across twenty days",
+        "refined_text": "In sprint planning our engineering team committed 40 story points across 6 feature stories for sprint 32, adjusting team velocity by accounting for 3 engineer vacations instead.\n\nReserve 8 story points for production support and triage rotation across 20 days."
+    },
+
+    # Sample 7: Domain 1 (Story Grooming) - Kafka event replay story grooming
+    {
+        "raw_asr": "our grooming session evaluated ticket six hundred two covering event stream replay inside consumer underscore worker dot py buy decoupling offset commits from processing loops wait assign eight story points four the pipeline redesign instead um verify that the replay worker handles fifteen thousand messages per second across four consumer partitions",
+        "refined_text": "Our grooming session evaluated ticket 602 covering event stream replay inside consumer_worker.py by decoupling offset commits from processing loops, assigning 8 story points for the pipeline redesign instead.\n\nVerify that the replay worker handles 15000 messages per second across 4 consumer partitions."
+    },
+
+    # Sample 8: Domain 2 (Daily Standups) - Standup update on Redis connection leak
+    {
+        "raw_asr": "in morning standup our squad investigated memory growth inside session underscore cache dot py buy analyzing connection leaks across thirty worker routines wait patch the leak buy wrapping connection checkout in a context manager instead um confirm that memory utilization drops buy forty percent across eight hours",
+        "refined_text": "In morning standup our squad investigated memory growth inside session_cache.py by analyzing connection leaks across 30 worker routines, patching the leak by wrapping connection checkout in a context manager instead.\n\nConfirm that memory utilization drops by 40 percent across 8 hours."
+    },
+
+    # Sample 9: Domain 2 (Daily Standups) - Standup update on search query latency
+    {
+        "raw_asr": "yesterday i resolved the customer search query latency regression buy adding a covering b tree index on the orders table wait benchmark the query execution time inside query underscore analyzer dot py instead um measur that p ninety five latency decreases from four hundred milliseconds down into sixty milliseconds across fifty test runs",
+        "refined_text": "Yesterday I resolved the customer search query latency regression by adding a covering B-tree index on the orders table, benchmarking the query execution time inside query_analyzer.py instead.\n\nMeasure that P95 latency decreases from 400 milliseconds down into 60 milliseconds across 50 test runs."
+    },
+
+    # Sample 10: Domain 2 (Async Standup / Slack Sync) - Async standup update on test flakes
+    {
+        "raw_asr": "posting our async standup update four the distributed testing suite where three flaky pipeline test suites failed inside test underscore runner dot py wait isolat the race condition buy increasing g r p c handshake deadlines two ten seconds instead um right two regression tests validating that fifty concurrent test runs complete without failure",
+        "refined_text": "Posting our async standup update for the distributed testing suite where 3 flaky pipeline test suites failed inside test_runner.py, isolating the race condition by increasing gRPC handshake deadlines to 10 seconds instead.\n\nWrite 2 regression tests validating that 50 concurrent test runs complete without failure."
+    },
+
+    # =========================================================================
+    # Tier 3: Long Utterances (90+ words) - Exactly 10 samples (Samples 11-20)
+    # Multi-paragraph separated by \n\n (2-3 solid paragraphs). Max \n\n: words // 25.
+    # Natural spoken engineer narration. Zero numbered checklist stereotypes.
+    # Avoid backticks.
+    # =========================================================================
+
+    # Sample 11: Domain 1 (Sprint Planning) - Sprint 45 capacity planning and story point allocation
+    {
+        "raw_asr": "in sprint planning our platform squad evaluated team velocity and established commitments four sprint forty five our historical velocity averages fifty two story points but our team committed two forty four story points due two planned vacation schedules across three backend developers we reviewed carryover issues from sprint forty four identifying ticket three one two covering database connection pooling as the primary uncompleted task um our squad decomposed the remaining scope of ticket three one two into two distinct tasks estimating five story points four tuning idle connection timeouts inside pool underscore manager dot py and three story points four updating monitoring metrics we agreed that resolving connection pool exhaustion remains our top priority before onboarding new tenant workloads finally our team finalized story point allocations four four new feature stories scheduled four the upcoming milestone we assigned eight story points two the payment retry worker and five story points two the webhook validation filter inside billing underscore service dot py our completed sprint backlog contains forty four estimated points distributed across eight engineering tasks ready four execution",
+        "refined_text": "In sprint planning our platform squad evaluated team velocity and established commitments for sprint 45. Our historical velocity averages 52 story points, but our team committed to 44 story points due to planned vacation schedules across 3 backend developers. We reviewed carryover issues from sprint 44, identifying ticket 312 covering database connection pooling as the primary uncompleted task.\n\nOur squad decomposed the remaining scope of ticket 312 into 2 distinct tasks, estimating 5 story points for tuning idle connection timeouts inside pool_manager.py and 3 story points for updating monitoring metrics. We agreed that resolving connection pool exhaustion remains our top priority before onboarding new tenant workloads.\n\nFinally our team finalized story point allocations for 4 new feature stories scheduled for the upcoming milestone. We assigned 8 story points to the payment retry worker and 5 story points to the webhook validation filter inside billing_service.py. Our completed sprint backlog contains 44 estimated points distributed across 8 engineering tasks ready for execution."
+    },
+
+    # Sample 12: Domain 1 (Story Grooming) - Grooming asynchronous invoice generation and email dispatch
+    {
+        "raw_asr": "during today backlog grooming session our product squad refined ticket four two zero covering asynchronous customer invoice generation our lead architect explained that synchronous invoice compilation caused gateway timeouts whenever billing batches exceeded five hundred invoices we agreed two decouple invoice rendering from transaction processing buy introducing an event driven worker pipeline um our team broke down ticket four two zero into three actionable backlog items buy isolating p d f rendering inside invoice underscore generator dot py and delegating email delivery two a notification queue we estimated eight story points four the background compilation worker accounting four retry logic when external storage buckets return status five zero three during network latency spikes additionally our squad assigned five story points two the audit logging listener inside notification underscore listener dot py ensuring that every dispatched receipt records an immutable delivery confirmation hash our refined acceptance criteria mandate unit test coverage exceeding ninety percent across twelve boundary conditions before opening pull requests four team review",
+        "refined_text": "During today backlog grooming session our product squad refined ticket 420 covering asynchronous customer invoice generation. Our lead architect explained that synchronous invoice compilation caused gateway timeouts whenever billing batches exceeded 500 invoices. We agreed to decouple invoice rendering from transaction processing by introducing an event-driven worker pipeline.\n\nOur team broke down ticket 420 into 3 actionable backlog items by isolating PDF rendering inside invoice_generator.py and delegating email delivery to a notification queue. We estimated 8 story points for the background compilation worker, accounting for retry logic when external storage buckets return status 503 during network latency spikes.\n\nAdditionally our squad assigned 5 story points to the audit logging listener inside notification_listener.py, ensuring that every dispatched receipt records an immutable delivery confirmation hash. Our refined acceptance criteria mandate unit test coverage exceeding 90 percent across 12 boundary conditions before opening pull requests for team review."
+    },
+
+    # Sample 13: Domain 1 (Sprint Planning) - Cross-squad dependency coordination and Elasticsearch index rebalancing
+    {
+        "raw_asr": "in this sprint planning session our data squad coordinated cross team dependencies with the platform team four sprint thirty six our primary objective focuses on upgrading our elasticsearch search cluster across sixteen data nodes while maintaining sub second query response times we identified a critical dependency on the platform team four provisioning eight dedicated flash storage volumes before index migration begins um our squad scoped ticket five one six covering index rebalancing estimating thirteen story points four implementing zero downtime alias switching inside search underscore migrator dot py our technical lead highlighted the risk of shard allocation thrashing establishing acceptance criteria that throttle snapshot recovery bandwidth two forty megabytes per second across each node furthermore we allocated five story points two ticket five one eight four synthetic canary benchmarking across twenty distinct search query patterns our sprint commitment totals forty two story points across six prioritized engineering tickets providing sufficient buffer four production support during the cluster cutover window",
+        "refined_text": "In this sprint planning session our data squad coordinated cross-team dependencies with the platform team for sprint 36. Our primary objective focuses on upgrading our Elasticsearch search cluster across 16 data nodes while maintaining sub-second query response times. We identified a critical dependency on the platform team for provisioning 8 dedicated flash storage volumes before index migration begins.\n\nOur squad scoped ticket 516 covering index rebalancing, estimating 13 story points for implementing zero-downtime alias switching inside search_migrator.py. Our technical lead highlighted the risk of shard allocation thrashing, establishing acceptance criteria that throttle snapshot recovery bandwidth to 40 megabytes per second across each node.\n\nFurthermore we allocated 5 story points to ticket 518 for synthetic canary benchmarking across 20 distinct search query patterns. Our sprint commitment totals 42 story points across 6 prioritized engineering tickets, providing sufficient buffer for production support during the cluster cutover window."
+    },
+
+    # Sample 14: Domain 1 (Story Grooming) - Grooming distributed rate limiter and Redis token bucket
+    {
+        "raw_asr": "during our backlog refinement session our infrastructure squad groomed ticket three three zero regarding distributed rate limiting across our public a p i gateways our existing in memory throttler failed under traffic surges because gateway instances operated independently without shared state we decided two centralize rate limiting around redis clusters two enforce accurate request quotas um our engineers decomposed ticket three three zero into two implementation tasks estimating eight story points four executing atomic lua token bucket evaluations inside rate underscore limiter dot py we explicitly included acceptance criteria requiring fallback two local leaky bucket algorithms if redis connection latency exceeds twenty five milliseconds across five consecutive probes we also groomed ticket three three two allocating five story points four exporting rate limiter telemetry metrics into prometheus the groomed story requires tracking h t t p four two nine status code emissions and client quota utilization across ten tenant tiers preparing our squad two start implementation during next week sprint",
+        "refined_text": "During our backlog refinement session our infrastructure squad groomed ticket 330 regarding distributed rate limiting across our public API gateways. Our existing in-memory throttler failed under traffic surges because gateway instances operated independently without shared state. We decided to centralize rate limiting around Redis clusters to enforce accurate request quotas.\n\nOur engineers decomposed ticket 330 into 2 implementation tasks, estimating 8 story points for executing atomic Lua token bucket evaluations inside rate_limiter.py. We explicitly included acceptance criteria requiring fallback to local leaky bucket algorithms if Redis connection latency exceeds 25 milliseconds across 5 consecutive probes.\n\nWe also groomed ticket 332, allocating 5 story points for exporting rate limiter telemetry metrics into Prometheus. The groomed story requires tracking HTTP 429 status code emissions and client quota utilization across 10 tenant tiers, preparing our squad to start implementation during next week sprint."
+    },
+
+    # Sample 15: Domain 1 (Sprint Planning) - Technical debt reduction sprint planning for PostgreSQL query optimization
+    {
+        "raw_asr": "in sprint planning our squad dedicated sprint forty eight two technical debt reduction and database optimization across our transaction services our query monitoring dashboards revealed that unindexed join operations caused database c p u spikes reaching eighty five percent during daily batch processing our team committed thirty eight story points specifically targeted at refactoring slow queries and optimizing table schemas um we prioritized ticket four six zero covering partial indexes on active user accounts estimating eight story points four generating non blocking index migrations inside migration underscore manager dot py our database engineer outlined acceptance criteria mandating that migration scripts execute during off peak hours without locking tables four more than two seconds additionally our team allocated five story points two ticket four six four four refactoring nested subqueries inside analytics underscore service dot py into efficient window functions with three backend engineers assigned two core refactoring tasks our sprint commitment guarantees that all seven technical debt stories receive focused review before deployment",
+        "refined_text": "In sprint planning our squad dedicated sprint 48 to technical debt reduction and database optimization across our transaction services. Our query monitoring dashboards revealed that unindexed join operations caused database CPU spikes reaching 85 percent during daily batch processing. Our team committed 38 story points specifically targeted at refactoring slow queries and optimizing table schemas.\n\nWe prioritized ticket 460 covering partial indexes on active user accounts, estimating 8 story points for generating non-blocking index migrations inside migration_manager.py. Our database engineer outlined acceptance criteria mandating that migration scripts execute during off-peak hours without locking tables for more than 2 seconds.\n\nAdditionally our team allocated 5 story points to ticket 464 for refactoring nested subqueries inside analytics_service.py into efficient window functions. With 3 backend engineers assigned to core refactoring tasks, our sprint commitment guarantees that all 7 technical debt stories receive focused review before deployment."
+    },
+
+    # Sample 16: Domain 2 (Daily Standups) - Standup report on database replica lag and connection pooling blocker
+    {
+        "raw_asr": "in this morning standup our backend squad reported on yesterday database replication lag incident affecting our european reporting nodes replication delay spiked two forty five seconds across eight read replicas due two a massive bulk transaction that saturated disk write queues i resolved the immediate delay buy pausing non critical background jobs and draining the replication buffer um today my primary focus is ticket five zero four where i am refactoring connection checkout logic inside database underscore pool dot py buy increasing maximum idle connection limits from twenty connections down into sixty connections wait increasing limits from twenty connections two sixty connections benchmarking shows that this adjustment reduces connection acquisition latency buy seventy five percent during concurrent load tests my active blocker is waiting four the database administrator two review the production indexing script before our scheduled maintenance window once approved i plan two deploy the schema migration across three staging environments buy mid afternoon",
+        "refined_text": "In this morning standup our backend squad reported on yesterday database replication lag incident affecting our European reporting nodes. Replication delay spiked to 45 seconds across 8 read replicas due to a massive bulk transaction that saturated disk write queues. I resolved the immediate delay by pausing non-critical background jobs and draining the replication buffer.\n\nToday my primary focus is ticket 504, where I am refactoring connection checkout logic inside database_pool.py by increasing maximum idle connection limits from 20 connections to 60 connections. Benchmarking shows that this adjustment reduces connection acquisition latency by 75 percent during concurrent load tests.\n\nMy active blocker is waiting for the database administrator to review the production indexing script before our scheduled maintenance window. Once approved, I plan to deploy the schema migration across 3 staging environments by mid-afternoon."
+    },
+
+    # Sample 17: Domain 2 (Daily Standups) - Standup update on Kafka consumer lag and partition rebalance blocker
+    {
+        "raw_asr": "during today daily standup our streaming squad reviewed consumer group lag across our telemetry ingestion pipelines yesterday evening our message lag exceeded eighty thousand records across sixteen kafka partitions when worker nodes entered an uncoordinated rebalance storm we stabilized partition consumption buy temporarily increasing session timeout thresholds from ten seconds two thirty seconds um today i am working on ticket five one two inside stream underscore consumer dot py implementing static partition assignments two eliminate expensive consumer group rebalances during pod rolling restarts staging verification confirms that static group membership reduces consumer recovery time from forty five seconds down into two seconds during container redeployments my current blocker is transient network packet drops on worker node four inside our staging kubernetes cluster i am pairing with the infrastructure team this morning two inspect node network interfaces before continuing our twenty four hour soak test",
+        "refined_text": "During today daily standup our streaming squad reviewed consumer group lag across our telemetry ingestion pipelines. Yesterday evening our message lag exceeded 80000 records across 16 Kafka partitions when worker nodes entered an uncoordinated rebalance storm. We stabilized partition consumption by temporarily increasing session timeout thresholds from 10 seconds to 30 seconds.\n\nToday I am working on ticket 512 inside stream_consumer.py, implementing static partition assignments to eliminate expensive consumer group rebalances during pod rolling restarts. Staging verification confirms that static group membership reduces consumer recovery time from 45 seconds down into 2 seconds during container redeployments.\n\nMy current blocker is transient network packet drops on worker node 4 inside our staging Kubernetes cluster. I am pairing with the infrastructure team this morning to inspect node network interfaces before continuing our 24 hour soak test."
+    },
+
+    # Sample 18: Domain 2 (Async Standup / Slack Sync) - Async standup update on token bucket rate limiter rollout
+    {
+        "raw_asr": "posting our async standup update four the a p i platform squad across european and american engineering time zones yesterday our engineers completed the rollout of our centralized token bucket rate limiter across twenty four edge gateway instances telemetry dashboards confirm that the rate limiter processed ten thousand requests per second while keeping p ninety five evaluation latency under four milliseconds um today our team is executing ticket five two eight inside gateway underscore proxy dot py adding automated circuit breaker fallback logic four upstream authentication timeouts we are validating that when authentication services fail the proxy returns h t t p five zero four gateway timeout errors while isolating healthy downstream routes we currently have zero active blockers across our sprint deliverables our squad plans two conduct a joint synthetic load test with fifty concurrent client workers this afternoon two ensure that system throughput remains stable before our sprint review on friday",
+        "refined_text": "Posting our async standup update for the API platform squad across European and American engineering time zones. Yesterday our engineers completed the rollout of our centralized token bucket rate limiter across 24 edge gateway instances. Telemetry dashboards confirm that the rate limiter processed 10000 requests per second while keeping P95 evaluation latency under 4 milliseconds.\n\nToday our team is executing ticket 528 inside gateway_proxy.py, adding automated circuit breaker fallback logic for upstream authentication timeouts. We are validating that when authentication services fail, the proxy returns HTTP 504 gateway timeout errors while isolating healthy downstream routes.\n\nWe currently have zero active blockers across our sprint deliverables. Our squad plans to conduct a joint synthetic load test with 50 concurrent client workers this afternoon to ensure that system throughput remains stable before our sprint review on Friday."
+    },
+
+    # Sample 19: Domain 2 (Daily Standups) - Standup triage on WebSocket server memory leak
+    {
+        "raw_asr": "in this morning standup our real time messaging squad triaged an escalating memory leak affecting our websocket gateway cluster production telemetry showed memory consumption climbing buy five hundred megabytes every two hours across twelve container instances yesterday afternoon we captured memory heap dumps and identified orphaned subscriber channels that failed two deregister upon client disconnection um today i am addressing ticket five three four inside socket underscore manager dot py implementing explicit channel teardown callbacks buy removing event listeners whenever network sockets terminate local regression testing indicates that connection cleanup eliminates memory growth while sustaining twenty thousand active concurrent websocket connections without socket stalls my active blocker is waiting four the load testing environment two finish upgrading its network driver before deploying our release candidate as soon as the staging cluster becomes available i will run a four hour stress test across eight worker instances two verify memory stability",
+        "refined_text": "In this morning standup our real-time messaging squad triaged an escalating memory leak affecting our WebSocket gateway cluster. Production telemetry showed memory consumption climbing by 500 megabytes every 2 hours across 12 container instances. Yesterday afternoon we captured memory heap dumps and identified orphaned subscriber channels that failed to deregister upon client disconnection.\n\nToday I am addressing ticket 534 inside socket_manager.py, implementing explicit channel teardown callbacks by removing event listeners whenever network sockets terminate. Local regression testing indicates that connection cleanup eliminates memory growth while sustaining 20000 active concurrent WebSocket connections without socket stalls.\n\nMy active blocker is waiting for the load testing environment to finish upgrading its network driver before deploying our release candidate. As soon as the staging cluster becomes available, I will run a 4 hour stress test across 8 worker instances to verify memory stability."
+    },
+
+    # Sample 20: Domain 2 (Async Standup / Shift Handoff) - On-call shift handoff and daily async standup update
+    {
+        "raw_asr": "submitting our a p a c two e m e a on call engineering shift handoff and async daily standup during our overnight shift our team responded two two minor alert pages regarding disk utilization reaching eighty two percent on reporting worker node six we mitigated the threshold alert buy purging rotated application log archives older than fourteen days without customer impact um yesterday our squad completed ticket five four zero inside alert underscore forwarder dot py improving automated paging rules buy routing non critical infrastructure warnings directly into a dedicated slack channel instead of triggering on call engineer pages we confirmed that this operational update reduced unnecessary notification volume buy sixty percent across eight service tiers we have no active blockers four the incoming e m e a shift today my planned task involves updating operational runbooks and conducting a live drill covering secondary database failover procedures across three cloud regions with our reliability engineer",
+        "refined_text": "Submitting our APAC to EMEA on-call engineering shift handoff and async daily standup. During our overnight shift our team responded to 2 minor alert pages regarding disk utilization reaching 82 percent on reporting worker node 6. We mitigated the threshold alert by purging rotated application log archives older than 14 days without customer impact.\n\nYesterday our squad completed ticket 540 inside alert_forwarder.py, improving automated paging rules by routing non-critical infrastructure warnings directly into a dedicated Slack channel instead of triggering on-call engineer pages. We confirmed that this operational update reduced unnecessary notification volume by 60 percent across 8 service tiers.\n\nWe have no active blockers for the incoming EMEA shift. Today my planned task involves updating operational runbooks and conducting a live drill covering secondary database failover procedures across 3 cloud regions with our reliability engineer."
+    }
+]
+
+print(f"Total samples defined: {len(samples)}")
+
+# Run validation checks
+all_passed = True
+for idx, pair in enumerate(samples):
+    raw = pair["raw_asr"]
+    ref = pair["refined_text"]
+    words = len(ref.split())
+
+    # 1. validate_pair
+    ok, reason = validate_pair(pair, is_practical_domain=True)
+    if not ok:
+        print(f"FAIL validate_pair sample {idx+1} ({words} words): {reason}")
+        all_passed = False
+
+    # 2. clean_sample
+    cleaned, status = clean_sample(raw, ref)
+    if status != "kept":
+        print(f"FAIL clean_sample sample {idx+1} ({words} words): {status}")
+        all_passed = False
+
+    # 3. Leakage check
+    if raw.lower() in eval_raws or ref in eval_refs:
+        print(f"FAIL eval leakage sample {idx+1}!")
+        all_passed = False
+
+# Batch validation
+batch_ok, batch_reason, tier_counts = validate_batch(samples, min_short=4, min_medium=6, min_long=10)
+print(f"Batch validation: ok={batch_ok}, reason='{batch_reason}', tier_counts={tier_counts}")
+if not batch_ok:
+    all_passed = False
+
+if all_passed:
+    print("SUCCESS: ALL 20 SAMPLES PASSED 100%!")
+    target_path = Path("scratch/subagent_batch_113.json")
+    with open(target_path, "w", encoding="utf-8") as f:
+        json.dump(samples, f, ensure_ascii=False, indent=2)
+    print(f"Wrote {len(samples)} verified samples to {target_path}")
+else:
+    print("ERRORS DETECTED - PLEASE FIX!")

@@ -1,0 +1,138 @@
+import json
+import sys
+import re
+
+sys.path.insert(0, "code")
+from validator import validate_pair, validate_batch
+from cleaner import clean_sample
+
+BATCH_92 = [
+  # --- Tier 1: Short Utterances (< 25 words) - Exactly 4 samples ---
+  {
+    "raw_asr": "basically compact conversational agent memory buffers buy executing rolling summary generat across fifty historical dialogue turns",
+    "refined_text": "Compact conversational agent memory buffers by executing rolling summary generation across 50 historical dialogue turns."
+  },
+  {
+    "raw_asr": "um set the system prompt temperature parameter towards zero four deterministic tool invocat payload formatting",
+    "refined_text": "Set the system prompt temperature parameter towards 0 for deterministic tool invocation payload formatting."
+  },
+  {
+    "raw_asr": "okay so validat agent tool call argument payloads buy evaluating schema fields against strict pydantic models",
+    "refined_text": "Validate agent tool call argument payloads by evaluating schema fields against strict Pydantic models."
+  },
+  {
+    "raw_asr": "basically enable prompt prefix caching buy storing static system instructions across three thousand incoming agent requests",
+    "refined_text": "Enable prompt prefix caching by storing static system instructions across 3000 incoming agent requests."
+  },
+
+  # --- Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples ---
+  {
+    "raw_asr": "basically structure the system prompt using explicit x m l delimiter tags buy isolating task instructions context variables and runtime tool definitions wait append negative behavioral constraints forbidding markdown format inside j son tool arguments across incoming queries",
+    "refined_text": "Structure the system prompt using explicit XML delimiter tags by isolating task instructions, context variables, and runtime tool definitions.\n\nAppend negative behavioral constraints forbidding markdown formatting inside JSON tool arguments across incoming queries."
+  },
+  {
+    "raw_asr": "um combin dense vector embeddings with sparse b m twenty five lexical search scores using reciprocal rank fusion inside the retrieval pipeline wait set the dense retrieval candidate pool towards fifty documents before calculating fused rank positions across top ten results",
+    "refined_text": "Combine dense vector embeddings with sparse BM25 lexical search scores using Reciprocal Rank Fusion inside the retrieval pipeline.\n\nSet the dense retrieval candidate pool towards 50 documents before calculating fused rank positions across top 10 results."
+  },
+  {
+    "raw_asr": "okay so catch runtime tool execut exceptions and append the full stack trace into conversational message state history wait instruct the agent two inspect the missing argument error before re executing the failed tool call",
+    "refined_text": "Catch runtime tool execution exceptions and append the full stack trace into conversational message state history.\n\nInstruct the agent to inspect the missing argument error before re-executing the failed tool call."
+  },
+  {
+    "raw_asr": "basically configur the supervisor agent two inspect user intent and route execution state towards specialized research or coding sub agents wait enforce typed state graph schemas so each worker appends intermediate observations without overwriting shared task metadata",
+    "refined_text": "Configure the supervisor agent to inspect user intent and route execution state towards specialized research or coding sub-agents.\n\nEnforce typed state graph schemas so each worker appends intermediate observations without overwriting shared task metadata."
+  },
+  {
+    "raw_asr": "um measure prompt token counts using tiktoken before assembling conversational context into the language model request window wait truncat dialogue history from one hundred twenty messages down into thirty messages whenever total prompt tokens exceed eight one nine two units",
+    "refined_text": "Measure prompt token counts using tiktoken before assembling conversational context into the language model request window.\n\nTruncate dialogue history from 120 messages down into 30 messages whenever total prompt tokens exceed 8192 units."
+  },
+  {
+    "raw_asr": "okay so enforce grammar guided sampling during model decoding two produce deterministic j son payloads matching the target a p i schema wait restrict vocabulary logits at each generat step so syntax errors never trigger downstream serialization failures",
+    "refined_text": "Enforce grammar guided sampling during model decoding to produce deterministic JSON payloads matching the target API schema.\n\nRestrict vocabulary logits at each generation step so syntax errors never trigger downstream serialization failures."
+  },
+
+  # --- Tier 3: Long Utterances (90+ words) - Exactly 10 samples ---
+  {
+    "raw_asr": "basically refactor our document ingestion pipeline buy replacing fixed token chunking with semantic section boundary chunking across technical repositories the current pipeline segments markdown documentation into arbitrar five hundred token windows splitting code examples and parameter tables across chunk boundaries during retrieval wait parse document heading hierarch two isolate second level sections bounding each candidate chunk between two five six through one zero two four tokens with sixty four token sliding overlap maintain document metadata tags including parent headings and relative file paths across each stored vector payload um route the top forty dense retrieval candidates through a cross encoder re ranking model two calculat query relevance scores filter the ranked candidates buy discarding chunks scoring below threshold sixty five before injecting the surviving passages into the agent system prompt",
+    "refined_text": "Refactor our document ingestion pipeline by replacing fixed token chunking with semantic section boundary chunking across technical repositories. The current pipeline segments markdown documentation into arbitrary 500 token windows, splitting code examples and parameter tables across chunk boundaries during retrieval.\n\nParse document heading hierarchies to isolate second level sections, bounding each candidate chunk between 256 through 1024 tokens with 64 token sliding overlap. Maintain document metadata tags including parent headings and relative file paths across each stored vector payload.\n\nRoute the top 40 dense retrieval candidates through a cross encoder re-ranking model to calculate query relevance scores. Filter the ranked candidates by discarding chunks scoring below threshold 65 before injecting the surviving passages into the agent system prompt."
+  },
+  {
+    "raw_asr": "okay so configur the autonomous software engineering agent execution loop two isolate tool calling cycles the agent receives an issue description and executes iterat cycles of repository search syntax tree editing and unit test validation wait enforce a strict ceiling of fifteen execution steps per task blocking infinite reasoning recursion at each step validat tool parameters using pydantic schemas rejecting malformed file modificat patches before disk write operations occur um capture pie test output buffers after each edit cycle feeding the last fifty lines of test tracebacks back into conversation state terminat the agent session immediately when all unit assertions pass with exit code zero",
+    "refined_text": "Configure the autonomous software engineering agent execution loop to isolate tool calling cycles. The agent receives an issue description and executes iterative cycles of repository search, syntax tree editing, and unit test validation.\n\nEnforce a strict ceiling of 15 execution steps per task, blocking infinite reasoning recursion. At each step, validate tool parameters using Pydantic schemas, rejecting malformed file modification patches before disk write operations occur.\n\nCapture pytest output buffers after each edit cycle, feeding the last 50 lines of test tracebacks back into conversation state. Terminate the agent session immediately when all unit assertions pass with exit code 0."
+  },
+  {
+    "raw_asr": "basically harden the agent system prompt instructions against indirect prompt injection embedded inside untrusted repository files attackers inject hidden comments into markdown documentat attempting two override system behavioral policies wait wrap all user supplied content inside distinct x m l tags labeled context and document instruct the model two treat data enclosed within these tags strictly as passive text ignoring any nested command directiv or role impersonation tokens um implement a deterministic token sequence detector checking incoming tool arguments four unauthoriz system role tags reject the execution payload and trigger a security alert if anomaly confidence exceeds eighty five across the evaluation window",
+    "refined_text": "Harden the agent system prompt instructions against indirect prompt injection embedded inside untrusted repository files. Attackers inject hidden comments into markdown documentation attempting to override system behavioral policies.\n\nWrap all user supplied content inside distinct XML tags labeled context and document. Instruct the model to treat data enclosed within these tags strictly as passive text, ignoring any nested command directives or role impersonation tokens.\n\nImplement a deterministic token sequence detector checking incoming tool arguments for unauthorized system role tags. Reject the execution payload and trigger a security alert if anomaly confidence exceeds 85 across the evaluation window."
+  },
+  {
+    "raw_asr": "okay so deploy a model context protocol server exposing database inspection and analytical query tools two our agent platform the m c p server establishes standard j son r p c communication over standard input and standard output streams wait expose twelve read only diagnostic tools that execute parameterized s q l selects against post gres read replicas restrict database connection pool allocat towards twenty persistent connections isolating production write nodes from agent analytical queries um enforce schema validation across all incoming m c p client tool requests buy checking query argument types against strict j son schemas reject any tool invocation attempting table drops or data mutat with validation error code four zero three",
+    "refined_text": "Deploy a Model Context Protocol server exposing database inspection and analytical query tools to our agent platform. The MCP server establishes standard JSON-RPC communication over standard input and standard output streams.\n\nExpose 12 read-only diagnostic tools that execute parameterized SQL selects against Postgres read replicas. Restrict database connection pool allocations towards 20 persistent connections, isolating production write nodes from agent analytical queries.\n\nEnforce schema validation across all incoming MCP client tool requests by checking query argument types against strict JSON schemas. Reject any tool invocation attempting table drops or data mutations with validation error code 403."
+  },
+  {
+    "raw_asr": "basically construct an automated l l m as a judge evaluation harness two evaluat agent trajectory quality across our golden dataset the evaluation harness ingests completed multi turn agent dialogue transcripts and compares observed tool calling steps against reference solutions wait calibrat the evaluation judge system prompt with clear five point scoring rubrics assessing tool call accuracy context precision and hallucination rates swap candidate ordering during pairwise evaluations two mitigate position bias averaging win rates across both orientations um execute evaluation runs across two hundred fifty test benchmarks logging rubric breakdown metrics into centralized observ dashboards require an aggregate faithfulness score of ninety before deploying new agent system prompt revisions into production environments",
+    "refined_text": "Construct an automated LLM as a judge evaluation harness to evaluate agent trajectory quality across our golden dataset. The evaluation harness ingests completed multi-turn agent dialogue transcripts and compares observed tool calling steps against reference solutions.\n\nCalibrate the evaluation judge system prompt with clear five point scoring rubrics assessing tool call accuracy, context precision, and hallucination rates. Swap candidate ordering during pairwise evaluations to mitigate position bias, averaging win rates across both orientations.\n\nExecute evaluation runs across 250 test benchmarks, logging rubric breakdown metrics into centralized observability dashboards. Require an aggregate faithfulness score of 90 before deploying new agent system prompt revisions into production environments."
+  },
+  {
+    "raw_asr": "okay so implement an a sink streaming client two parse server sent events emitted buy our agent inference runtime the current gateway buffers entire model completion payloads before transmitting responses causing high perceiv latency on user interfaces wait stream generated tokens incrementally over h t t p chunks forwarding raw text deltas directly two web clients accumulate streaming tool call delta fragments into an internal buffer reconstruct complete j son parameter blocks as chunks arrive um dispatch a sink tool execut immediately once the model emits a tool call completion event process background queries across eight concurrent worker tasks while streaming status messages back two the user maintaining p ninety five response latency under three five zero milliseconds",
+    "refined_text": "Implement an asynchronous streaming client to parse server-sent events emitted by our agent inference runtime. The current gateway buffers entire model completion payloads before transmitting responses, causing high perceived latency on user interfaces.\n\nStream generated tokens incrementally over HTTP chunks, forwarding raw text deltas directly to web clients. Accumulate streaming tool call delta fragments into an internal buffer, reconstructing complete JSON parameter blocks as chunks arrive.\n\nDispatch asynchronous tool executions immediately once the model emits a tool call completion event. Process background queries across 8 concurrent worker tasks while streaming status messages back to the user, maintaining P95 response latency under 350 milliseconds."
+  },
+  {
+    "raw_asr": "basically refactor our agent memory manager buy implementing hierarchical context compaction four long horizon task executions storing full conversational history across hundreds of turns exhaust model attention budgets and dilutes relevant task instructions wait segment dialogue history into active working memory and archived episodic memory tiers retain the last sixteen conversational messages within working memory triggering an a sink summarizer two distill older dialogue turns into structured factual bullet summaries um compress conversational token footprints from three two seven six eight tokens down into four zero nine six tokens across multi turn sessions inject distilled memory summaries into the system prompt prefix preserving critical entity dependencies without degrading agent reasoning consistency",
+    "refined_text": "Refactor our agent memory manager by implementing hierarchical context compaction for long horizon task executions. Storing full conversational history across hundreds of turns exhausts model attention budgets and dilutes relevant task instructions.\n\nSegment dialogue history into active working memory and archived episodic memory tiers. Retain the last 16 conversational messages within working memory, triggering an asynchronous summarizer to distill older dialogue turns into structured factual bullet summaries.\n\nCompress conversational token footprints from 32768 tokens down into 4096 tokens across multi-turn sessions. Inject distilled memory summaries into the system prompt prefix, preserving critical entity dependencies without degrading agent reasoning consistency."
+  },
+  {
+    "raw_asr": "okay so tune vector database indexing parameters inside our qdrant retrieval collection storing code embeddings the current default index configuration suffers from degrad recall during filtered similarity searches across multi repository workspaces wait rebuild the h n s w graph index buy setting the m parameter two thirty two connections and the ef construction parameter two one two eight enforce cosine distance metrics over our one five three six dimension dense embeddings optimizing vector dot product operations across g p u acceleration clusters um configur payload index schemas on tenant and repository tags two accelerat pre filtering passes before nearest neighbor graph traversals benchmark retrieval throughput under load validating that p ninety nine query latency remains under twenty five milliseconds across five hundred thousand stored vectors",
+    "refined_text": "Tune vector database indexing parameters inside our Qdrant retrieval collection storing code embeddings. The current default index configuration suffers from degraded recall during filtered similarity searches across multi-repository workspaces.\n\nRebuild the HNSW graph index by setting the M parameter to 32 connections and the ef construction parameter to 128. Enforce cosine distance metrics over our 1536 dimension dense embeddings, optimizing vector dot product operations across GPU acceleration clusters.\n\nConfigure payload index schemas on tenant and repository tags to accelerate pre-filtering passes before nearest neighbor graph traversals. Benchmark retrieval throughput under load, validating that P99 query latency remains under 25 milliseconds across 500000 stored vectors."
+  },
+  {
+    "raw_asr": "basically implement a reflective multi agent coordination workflow two verify critical infrastructure configuration scripts before deployment unilateral agent execution frequently introduces subtle parameter errors in complex terraform and coober netties templates wait establish a three tier agent topology consisting of a generator agent a critique agent and a supervisor arbitrat the generator agent propos configuration changes while the critique agent evaluates generated templates against organizational security policies and compliance constraints um limit the reflection dialogue between generator and critique workers from one through three iterat turns two bound execution latency the supervisor arbitrat reviews final consensus outputs and grants deployment approval only when both agents reach one hundred agreement",
+    "refined_text": "Implement a reflective multi-agent coordination workflow to verify critical infrastructure configuration scripts before deployment. Unilateral agent execution frequently introduces subtle parameter errors in complex terraform and Kubernetes templates.\n\nEstablish a three tier agent topology consisting of a generator agent, a critique agent, and a supervisor arbitrator. The generator agent proposes configuration changes, while the critique agent evaluates generated templates against organizational security policies and compliance constraints.\n\nLimit the reflection dialogue between generator and critique workers from 1 through 3 iterative turns to bound execution latency. The supervisor arbitrator reviews final consensus outputs and grants deployment approval only when both agents reach 100 agreement."
+  },
+  {
+    "raw_asr": "okay so optimize gateway proxy routing parameters four our shared agent model inference cluster increasing conversat turn depths and sprawling system instructions elevate time two first token metrics and inflate hosting costs across production tiers wait enable prompt prefix caching on static system instruction blocks and tool schema declarat across incoming requests when cache hits occur on prompts exceeding four zero nine six tokens prompt processing latency drops buy eighty while cutting gateway token processing fees um deploy speculative decoding using an auxiliary draft model two accelerat token generation throughput during long multi step agent reasoning passes profile inference metrics maintaining t t f t latency under one eight zero milliseconds and average inter token generation speed at forty five tokens per second",
+    "refined_text": "Optimize gateway proxy routing parameters for our shared agent model inference cluster. Increasing conversation turn depths and sprawling system instructions elevate time to first token metrics and inflate hosting costs across production tiers.\n\nEnable prompt prefix caching on static system instruction blocks and tool schema declarations across incoming requests. When cache hits occur on prompts exceeding 4096 tokens, prompt processing latency drops by 80 while cutting gateway token processing fees.\n\nDeploy speculative decoding using an auxiliary draft model to accelerate token generation throughput during long multi-step agent reasoning passes. Profile inference metrics, maintaining TTFT latency under 180 milliseconds and average inter-token generation speed at 45 tokens per second."
+  }
+]
+
+def main():
+    print(f"Total candidate pairs: {len(BATCH_92)}")
+    assert len(BATCH_92) == 20, f"Expected 20 samples, got {len(BATCH_92)}"
+
+    pair_errors = 0
+    clean_errors = 0
+
+    for idx, pair in enumerate(BATCH_92):
+        raw = pair["raw_asr"]
+        ref = pair["refined_text"]
+        w_count = len(ref.split())
+
+        val_ok, val_reason = validate_pair(pair)
+        if not val_ok:
+            print(f"Sample {idx+1} failed validate_pair: {val_reason}")
+            pair_errors += 1
+
+        clean_res, clean_status = clean_sample(raw, ref)
+        if clean_status != "kept":
+            print(f"Sample {idx+1} failed clean_sample: {clean_status}")
+            clean_errors += 1
+
+        tier = "short" if w_count < 25 else ("medium" if w_count < 90 else "long")
+        print(f"Sample {idx+1:02d}: tier={tier:<6} words={w_count:<3} val={'OK' if val_ok else 'FAIL'} clean={clean_status}")
+
+    batch_ok, batch_msg, tier_counts = validate_batch(BATCH_92, min_short=4, min_medium=6, min_long=10)
+    print("\n--- Batch Validation Summary ---")
+    print(f"Batch validation status: {batch_ok} ({batch_msg})")
+    print(f"Tier counts: {tier_counts}")
+    print(f"Pair errors: {pair_errors}, Cleaner errors: {clean_errors}")
+
+    if pair_errors == 0 and clean_errors == 0 and batch_ok:
+        output_path = "scratch/subagent_batch_92.json"
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(BATCH_92, f, indent=2, ensure_ascii=False)
+        print(f"\nSuccessfully wrote 20 verified samples to {output_path}")
+    else:
+        print("\nValidation failed! Please fix errors.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

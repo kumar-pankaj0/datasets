@@ -1,0 +1,193 @@
+import json
+import re
+import sys
+from pathlib import Path
+
+sys.path.append("code")
+from validator import validate_pair, validate_batch
+from cleaner import clean_sample
+
+batch = [
+    # --- TIER 1: SHORT (< 25 words) - 4 samples ---
+    # Sample 1: ESP32 task pinning
+    {
+        "raw_asr": "um configur the e s p thirty two task pinning buy assigning the telemetry task to c p u core zero",
+        "refined_text": "Configure the ESP32 task pinning by assigning the telemetry task to CPU core 0."
+    },
+    # Sample 2: I2C clock stretching flag
+    {
+        "raw_asr": "uh clear the i two c clock stretching timeout flag buy writing one to the bus status register",
+        "refined_text": "Clear the I2C clock stretching timeout flag by writing 1 to the bus status register."
+    },
+    # Sample 3: DMA ring buffer head pointer
+    {
+        "raw_asr": "basically initializ the d m a circular ring buffer head pointer buy loading register zero x four zero with zero",
+        "refined_text": "Initialize the DMA circular ring buffer head pointer by loading register 0x40 with 0."
+    },
+    # Sample 4: Flash wear leveling erase counter
+    {
+        "raw_asr": "right thirty two into the flash wear leveling block erase counter register buy executing the non volatile write sequence",
+        "refined_text": "Write 32 into the flash wear leveling block erase counter register by executing the non-volatile write sequence."
+    },
+
+    # --- TIER 2: MEDIUM (25 to 89 words) - 6 samples ---
+    # Sample 5: CAN-FD bit timing register
+    {
+        "raw_asr": "basically configur the c a n f d nominal bit timing register buy writing prescaler value four into the baud rate field right twelve wait right sixteen instead into the time segment one register the controller synchronizes data frames across the bus without phase errors",
+        "refined_text": "Configure the CAN-FD nominal bit timing register by writing prescaler value 4 into the baud rate field. Write 16 instead into the time segment 1 register.\n\nThe controller synchronizes data frames across the bus without phase errors."
+    },
+    # Sample 6: Hardware timer input capture
+    {
+        "raw_asr": "um calibrat the hardware timer input capture channel buy setting the input filter prescaler to eight clock cycles right thirty two into the auto reload register wait right sixty four instead the timer measures pulse width intervals buy capturing counter values on rising edge transitions",
+        "refined_text": "Calibrate the hardware timer input capture channel by setting the input filter prescaler to 8 clock cycles. Write 64 instead into the auto-reload register.\n\nThe timer measures pulse width intervals by capturing counter values on rising edge transitions."
+    },
+    # Sample 7: FreeRTOS recursive mutex
+    {
+        "raw_asr": "allocat a free are toss recursive mutex buy initializing the mutex handle with priority inheritance enabled right twenty into the acquisition timeout parameter wait right forty ticks instead the scheduler boosts thread priority during shared resource access across conflicting tasks",
+        "refined_text": "Allocate a FreeRTOS recursive mutex by initializing the mutex handle with priority inheritance enabled. Write 40 ticks instead into the acquisition timeout parameter.\n\nThe scheduler boosts thread priority during shared resource access across conflicting tasks."
+    },
+    # Sample 8: I2C bus recovery sequence
+    {
+        "raw_asr": "okay so recover the locked i two c bus buy clocking nine manual pulses on the serial clock line right zero x zero zero into the slave address register wait right zero x zero eight instead the peripheral clears the stuck low state on the data line",
+        "refined_text": "Recover the locked I2C bus by clocking 9 manual pulses on the serial clock line. Write 0x08 instead into the slave address register.\n\nThe peripheral clears the stuck low state on the data line."
+    },
+    # Sample 9: Watchdog kick in window reload
+    {
+        "raw_asr": "basically configur the windowed watchdog reload register buy writing thirty two into the upper window threshold field right sixty four into the down counter register wait right one hundred twenty eight instead the firmware kicks the counter during the valid window buy executing the refresh sequence",
+        "refined_text": "Configure the windowed watchdog reload register by writing 32 into the upper window threshold field. Write 128 instead into the down counter register.\n\nThe firmware kicks the counter during the valid window by executing the refresh sequence."
+    },
+    # Sample 10: ISR deferred processing
+    {
+        "raw_asr": "uh initializ the deferred interrupt handler buy binding an r t o s task notification to the timer interrupt vector right priority four into the n v i c register wait right priority two instead the lightweight i s r offloads heavy sensor processing buy waking the worker thread",
+        "refined_text": "Initialize the deferred interrupt handler by binding an RTOS task notification to the timer interrupt vector. Write priority 2 instead into the NVIC register.\n\nThe lightweight ISR offloads heavy sensor processing by waking the worker thread."
+    },
+
+    # --- TIER 3: LONG (90+ words) - 10 samples ---
+    # Sample 11: ESP32-S3 Wi-Fi and audio DMA ring buffer underruns
+    {
+        "raw_asr": "okay so our e s p thirty two s three embedded audio player suffered recurring buffer underruns and crackling audio during simultaneous wi fi streaming and i two s playback we hooked up a logic analyzer to the audio word select line and verified that the d m a controller exhausted its circular buffer descriptors during burst wi fi beacon frame processing the high priority radio baseband interrupt locked the c p u four up to eight milliseconds while the audio decoder buffer held only four milliseconds of p c m samples um we resolved the audio underruns buy migrating the audio ring buffer from internal s r a m to external octal p s r a m and increasing the descriptor chain depth configur the d m a channel configuration register buy setting the burst transfer size to sixty four bytes right two zero four eight wait right four zero nine six instead into the d m a buffer length register to provide forty milliseconds of sample buffering basically we also configur the free are toss audio task affinity buy pinning the playback decoder to c p u core one while the wi fi networking stack executes on c p u core zero right priority level sixteen into the audio task priority field after applying this memory remapping and task pinning the audio pipeline maintained continuous streaming without dropped samples or buffer starvation during peak wireless network activity",
+        "refined_text": "Our ESP32-S3 embedded audio player suffered recurring buffer underruns and crackling audio during simultaneous Wi-Fi streaming and I2S playback. We hooked up a logic analyzer to the audio word select line and verified that the DMA controller exhausted its circular buffer descriptors during burst Wi-Fi beacon frame processing. The high-priority radio baseband interrupt locked the CPU for up to 8 milliseconds while the audio decoder buffer held only 4 milliseconds of PCM samples.\n\nWe resolved the audio underruns by migrating the audio ring buffer from internal SRAM to external octal PSRAM and increasing the descriptor chain depth. Configure the DMA channel configuration register by setting the burst transfer size to 64 bytes. Write 4096 instead into the DMA buffer length register to provide 40 milliseconds of sample buffering.\n\nWe also configured the FreeRTOS audio task affinity by pinning the playback decoder to CPU core 1 while the Wi-Fi networking stack executes on CPU core 0. Write priority level 16 into the audio task priority field. After applying this memory remapping and task pinning, the audio pipeline maintained continuous streaming without dropped samples or buffer starvation during peak wireless network activity."
+    },
+
+    # Sample 12: Automotive LIN bus master schedule jitter
+    {
+        "raw_asr": "basically our automotive body control module experienced intermittent response collisions and sync byte framing errors on the l i n bus schedule table during heavy c a n gateway forwarding we connected an oscilloscope to the single wire l i n transceiver line and confirmed that the slave response frames overlapped the master header break delimiter the hardware timer driving the master schedule slot drifted buy several hundred microseconds because high priority communication interrupts delayed the schedule timer interrupt handler um we eliminated schedule jitter buy moving the l i n break and sync generation to a dedicated hardware timer channel with automatic compare output toggle configur the l i n schedule slot timer buy setting the base tick period to twenty milliseconds right thirty two wait right forty eight instead into the break field length register to guarantee thirteen nominal bit times four the break delimiter okay so we also adjusted the n v i c interrupt priority buy setting the l i n timer interrupt priority to level two above the c a n gateway queue handler right zero x zero four into the l i n control register to enable automatic header transmiss after loading these hardware timer compare values the master schedule table maintained exact twenty millisecond slot timing without frame collisions or bus errors across operating temperature cycles",
+        "refined_text": "Our automotive body control module experienced intermittent response collisions and sync byte framing errors on the LIN bus schedule table during heavy CAN gateway forwarding. We connected an oscilloscope to the single-wire LIN transceiver line and confirmed that the slave response frames overlapped the master header break delimiter. The hardware timer driving the master schedule slot drifted by several hundred microseconds because high-priority communication interrupts delayed the schedule timer interrupt handler.\n\nWe eliminated schedule jitter by moving the LIN break and sync generation to a dedicated hardware timer channel with automatic compare output toggle. Configure the LIN schedule slot timer by setting the base tick period to 20 milliseconds. Write 48 instead into the break field length register to guarantee 13 nominal bit times for the break delimiter.\n\nWe also adjusted the NVIC interrupt priority by setting the LIN timer interrupt priority to level 2 above the CAN gateway queue handler. Write 0x04 into the LIN control register to enable automatic header transmission. After loading these hardware timer compare values, the master schedule table maintained exact 20-millisecond slot timing without frame collisions or bus errors across operating temperature cycles."
+    },
+
+    # Sample 13: SPI NAND flash wear leveling journal corruption
+    {
+        "raw_asr": "uh our industrial sensor datalogger suffered block corruption and metadata read errors across sudden power loss events on the external s p i nand flash chip we analyzed the flash memory layout using a logic analyzer and found that the wear leveling journal experienced incomplete block migrations when power dropped during block erase the wear leveling algorithm lacked two phase commit headers causing the wear leveling pointer to reference erased blocks on subsequent boot cycles um we resolved the wear leveling corruption buy implementing an atomic two phase transaction log with rolling crc checks configur the flash block allocation manager buy setting the journal block reserve to sixteen physical blocks right thirty two wait right sixty four instead into the maximum erase cycle delta threshold register to trigger dynamic wear rebalancing basically we also added a brownout detector interrupt buy setting the voltage threshold monitor to three volts right zero x zero eight into the flash control register to abort incomplete writes before supply rail collapse after deploying this transaction journal and voltage monitoring the storage system completed one hundred thousand power failure cycles without data loss or metadata corrupt",
+        "refined_text": "Our industrial sensor datalogger suffered block corruption and metadata read errors across sudden power loss events on the external SPI NAND flash chip. We analyzed the flash memory layout using a logic analyzer and found that the wear leveling journal experienced incomplete block migrations when power dropped during block erase. The wear leveling algorithm lacked two-phase commit headers, causing the wear leveling pointer to reference erased blocks on subsequent boot cycles.\n\nWe resolved the wear leveling corruption by implementing an atomic two-phase transaction log with rolling CRC checks. Configure the flash block allocation manager by setting the journal block reserve to 16 physical blocks. Write 64 instead into the maximum erase cycle delta threshold register to trigger dynamic wear rebalancing.\n\nWe also added a brownout detector interrupt by setting the voltage threshold monitor to 3 volts. Write 0x08 into the flash control register to abort incomplete writes before supply rail collapse. After deploying this transaction journal and voltage monitoring, the storage system completed 100000 power failure cycles without data loss or metadata corruption."
+    },
+
+    # Sample 14: I2C clock stretching bus lockup recovery
+    {
+        "raw_asr": "okay so our environmental monitoring node suffered complete communication freeze on the primary i two c bus whenever high ambient humidity caused the digital sensor to stretch the clock line beyond twenty five milliseconds we probed the serial clock and serial data lines with an oscilloscope and observed that the sensor held the serial data line low while the microcontroller bus peripheral remained trapped in a busy master wait state the hardware i two c engine lacked automatic clock stretching timeout recovery causing all subsequent sensor polling transactions to stall indefinitely um we restored bus recovery buy implementing a manual g p i o bus clear sequence within the i two c fault handler configur the bus recovery routine buy reconfiguring the serial clock pin as a general purpose push pull output right sixteen wait right thirty two instead into the recovery loop count register to pulse the clock line nine times while sampling data high transitions okay so we also configur the hardware bus timeout register buy loading eighty four into the low clock timeout field right zero x zero one into the i two c reset control register to reinitialize the peripheral state machine after clearing the stuck bus this hardware timeout and bus recovery sequence successfully recovered every stuck bus event without requiring a full c p u reboot during long duration chamber testing",
+        "refined_text": "Our environmental monitoring node suffered complete communication freeze on the primary I2C bus whenever high ambient humidity caused the digital sensor to stretch the clock line beyond 25 milliseconds. We probed the serial clock and serial data lines with an oscilloscope and observed that the sensor held the serial data line low while the microcontroller bus peripheral remained trapped in a busy master wait state. The hardware I2C engine lacked automatic clock stretching timeout recovery, causing all subsequent sensor polling transactions to stall indefinitely.\n\nWe restored bus recovery by implementing a manual GPIO bus clear sequence within the I2C fault handler. Configure the bus recovery routine by reconfiguring the serial clock pin as a general-purpose push-pull output. Write 32 instead into the recovery loop count register to pulse the clock line 9 times while sampling data high transitions.\n\nWe also configured the hardware bus timeout register by loading 84 into the low clock timeout field. Write 0x01 into the I2C reset control register to reinitialize the peripheral state machine after clearing the stuck bus. This hardware timeout and bus recovery sequence successfully recovered every stuck bus event without requiring a full CPU reboot during long-duration chamber testing."
+    },
+
+    # Sample 15: RISC-V interrupt latency spike during ADC sampling
+    {
+        "raw_asr": "uh our r i s c v motor drive board experienced severe current sample jitter and phase distortion when reading high frequency motor phase currents during field oriented control execution we profiled interrupt response timing using an external logic analyzer pin toggle and found that the analog to digital converter end of conversion interrupt suffered latency spikes exceeding eighteen microseconds the firmware driver enclosed sensor filter calculations in broad critical sections buy clearing the machine interrupt enable bit inside the mstatus register stalling fast timer and sensor interrupts um we eliminated interrupt latency buy replacing global interrupt masking with nested interrupt prioritization and atomic memory operations configur the interrupt controller buy assigning hardware priority seven to the a d c conversion interrupt right four wait right eight instead into the preemption threshold register to allow high priority current sampling to preempt lower priority communication tasks basically we also updated the filter loop buy using r i s c v atomic memory instructions instead of disabling interrupts right zero x zero eight into the mie register to keep timer interrupts active during math calculations after eliminating global interrupt disabling the current sampling loop achieved consistent two microsecond interrupt response without timing jitter during high speed motor accelerat",
+        "refined_text": "Our RISC-V motor drive board experienced severe current sample jitter and phase distortion when reading high-frequency motor phase currents during field-oriented control execution. We profiled interrupt response timing using an external logic analyzer pin toggle and found that the analog-to-digital converter end of conversion interrupt suffered latency spikes exceeding 18 microseconds. The firmware driver enclosed sensor filter calculations in broad critical sections by clearing the machine interrupt enable bit inside the mstatus register, stalling fast timer and sensor interrupts.\n\nWe eliminated interrupt latency by replacing global interrupt masking with nested interrupt prioritization and atomic memory operations. Configure the interrupt controller by assigning hardware priority 7 to the ADC conversion interrupt. Write 8 instead into the preemption threshold register to allow high-priority current sampling to preempt lower-priority communication tasks.\n\nWe also updated the filter loop by using RISC-V atomic memory instructions instead of disabling interrupts. Write 0x08 into the mie register to keep timer interrupts active during math calculations. After eliminating global interrupt disabling, the current sampling loop achieved consistent 2-microsecond interrupt response without timing jitter during high-speed motor acceleration."
+    },
+
+    # Sample 16: UART DMA circular ring buffer overrun on telemetry gateway
+    {
+        "raw_asr": "basically our telemetry gateway experienced recurring serial packet truncation and u art fifo overrun errors during high baud rate cellular modem communication we inspected the d m a transfer status using a j tag debugger and discovered that incoming packet bursts overflowed the single d m a receive buffer before the c p u could copy the payload into application memory the firmware relied solely on the d m a transfer complete interrupt which only fired when the full circular buffer filled leaving short variable length packets trapped in memory um we resolved serial packet loss buy implementing d m a circular double buffering coupled with the u art idle line interrupt configur the u art control register buy enabling the idle line detection interrupt to trigger immediate buffer processing right two five six wait right five one two instead into the d m a buffer allocation register to provide adequate headroom four burst data packets okay so we also configur the d m a circular mode register buy setting the circular transfer bit and enabling half transfer interrupts right zero x zero two into the u art interrupt enable register to handle partial frame receptions after activating idle line detection and circular double buffering the gateway captured continuous modem telemetry streams without dropped characters or fifo buffer overruns during peak cellular burst transmiss",
+        "refined_text": "Our telemetry gateway experienced recurring serial packet truncation and UART FIFO overrun errors during high baud rate cellular modem communication. We inspected the DMA transfer status using a JTAG debugger and discovered that incoming packet bursts overflowed the single DMA receive buffer before the CPU could copy the payload into application memory. The firmware relied solely on the DMA transfer complete interrupt, which only fired when the full circular buffer filled, leaving short variable-length packets trapped in memory.\n\nWe resolved serial packet loss by implementing DMA circular double buffering coupled with the UART idle line interrupt. Configure the UART control register by enabling the idle line detection interrupt to trigger immediate buffer processing. Write 512 instead into the DMA buffer allocation register to provide adequate headroom for burst data packets.\n\nWe also configured the DMA circular mode register by setting the circular transfer bit and enabling half transfer interrupts. Write 0x02 into the UART interrupt enable register to handle partial frame receptions. After activating idle line detection and circular double buffering, the gateway captured continuous modem telemetry streams without dropped characters or FIFO buffer overruns during peak cellular burst transmission."
+    },
+
+    # Sample 17: Priority inversion deadlock on drone flight controller
+    {
+        "raw_asr": "okay so our drone flight control board suffered flight attitude instability and missed motor control update deadlines whenever the background telemetry logger wrote flight log records to external flash memory we profiled thread scheduling behavior using free are toss trace hooks and discovered severe unbounded priority inversion between the high priority attitude control task and the low priority flash writer thread both tasks shared an i two c bus resource protected buy a basic binary semaphore when a medium priority communication thread preempted the low priority flash task while it held the semaphore the critical flight control thread was blocked waiting four the bus um we eliminated priority inversion buy replacing the binary semaphore with a free are toss mutex supporting priority inheritance configur the shared bus mutex object buy assigning priority inheritance semantics during mutex initializ right sixteen wait right thirty two instead into the mutex acquisition timeout register to avoid indefinite blocking during peripheral bus stalls basically we also restructured task execution buy raising the attitude control task priority to level eight above all communication threads right zero x zero one into the task notification register to wake the motor driver upon sensor data readiness after upgrading to priority inheriting mutexes the attitude control loop executed with deterministic one millisecond update periods without missed deadlines or control loop lockups during heavy logging operat",
+        "refined_text": "Our drone flight control board suffered flight attitude instability and missed motor control update deadlines whenever the background telemetry logger wrote flight log records to external flash memory. We profiled thread scheduling behavior using FreeRTOS trace hooks and discovered severe unbounded priority inversion between the high-priority attitude control task and the low-priority flash writer thread. Both tasks shared an I2C bus resource protected by a basic binary semaphore. When a medium-priority communication thread preempted the low-priority flash task while it held the semaphore, the critical flight control thread was blocked waiting for the bus.\n\nWe eliminated priority inversion by replacing the binary semaphore with a FreeRTOS mutex supporting priority inheritance. Configure the shared bus mutex object by assigning priority inheritance semantics during mutex initialization. Write 32 instead into the mutex acquisition timeout register to avoid indefinite blocking during peripheral bus stalls.\n\nWe also restructured task execution by raising the attitude control task priority to level 8 above all communication threads. Write 0x01 into the task notification register to wake the motor driver upon sensor data readiness. After upgrading to priority-inheriting mutexes, the attitude control loop executed with deterministic 1-millisecond update periods without missed deadlines or control loop lockups during heavy logging operation."
+    },
+
+    # Sample 18: CAN FD bus-off state during thermal cycling
+    {
+        "raw_asr": "uh our automotive powertrain module entered repetitive c a n bus off states and dropped off the vehicle network during thermal chamber qualification at eighty five degrees celsius we monitored the c a n bus lines with a bus analyzer and discovered that high temperature induced clock drift in the internal high speed r c oscillator shifting the bit sampling point by several percent at five megabits data rate the c a n controller registered consecutive transmit error counter increments until exceeding the bus off limit of two hundred fifty five errors shut down the transceiver um we eliminated bus off events buy switching the clock source to an external temperature compensated crystal oscillator and retuning the data phase time segments configur the c a n bit timing register buy setting the synchronization jump width to four time quanta right sixteen wait right twenty four instead into the propagation segment register to widen the bit sample window to seventy percent of nominal bit time okay so we also adjusted the error warning limit register buy writing value thirty two to receive early warning interrupts before bus off occurs right zero x zero two into the c a n control register to enable automatic bus off recovery state transitions after calibrating the oscillator and bit timing registers the module passed uninterrupted thermal endurance runs without bit errors or bus off disconnects across all temperature cycles",
+        "refined_text": "Our automotive powertrain module entered repetitive CAN bus-off states and dropped off the vehicle network during thermal chamber qualification at 85 degrees Celsius. We monitored the CAN bus lines with a bus analyzer and discovered that high temperature induced clock drift in the internal high-speed RC oscillator, shifting the bit sampling point by several percent at 5 megabits data rate. The CAN controller registered consecutive transmit error counter increments until exceeding the bus-off limit of 255 errors shut down the transceiver.\n\nWe eliminated bus-off events by switching the clock source to an external temperature-compensated crystal oscillator and retuning the data phase time segments. Configure the CAN bit timing register by setting the synchronization jump width to 4 time quanta. Write 24 instead into the propagation segment register to widen the bit sample window to 70 percent of nominal bit time.\n\nWe also adjusted the error warning limit register by writing value 32 to receive early warning interrupts before bus-off occurs. Write 0x02 into the CAN control register to enable automatic bus-off recovery state transitions. After calibrating the oscillator and bit timing registers, the module passed uninterrupted thermal endurance runs without bit errors or bus-off disconnects across all temperature cycles."
+    },
+
+    # Sample 19: nRF52840 deep sleep current consumption anomaly
+    {
+        "raw_asr": "basically our n r f fifty two asset tracker suffered premature battery exhaustion during field deployment drawing four hundred fifty microamps in deep sleep instead of the expected three microamps target we measured supply rail currents using a high resolution digital multimeter and inspected peripheral register states over a serial debug console the investigation revealed that floating input pins on the unused serial interface caused continuous leakage current through the internal input buffer stages while the thirty two megahertz high frequency crystal oscillator remained running in the background um we resolved the sleep current anomaly buy reconfiguring all unused g p i o pins to analog disconnect state and halting high frequency clock generation before entering sleep configur the g p i o pin configuration registers buy setting the input buffer disconnect bit on pin eight and pin nine right sixteen wait right thirty two instead into the clock manager task register to explicitly halt the high frequency crystal oscillator and retain only the low power thirty two kilohertz r c oscillator basically we also enabled system off sleep mode buy writing value one into the power system off register right zero x zero one into the wakeup source mask register to allow wakeup only on accelerometer motion interrupts after applying these pin reconfigurations and clock shutdown commands the device deep sleep current dropped to two microamps achieving four year battery life on a single coin cell battery",
+        "refined_text": "Our nRF52 asset tracker suffered premature battery exhaustion during field deployment, drawing 450 microamps in deep sleep instead of the expected 3 microamps target. We measured supply rail currents using a high-resolution digital multimeter and inspected peripheral register states over a serial debug console. The investigation revealed that floating input pins on the unused serial interface caused continuous leakage current through the internal input buffer stages, while the 32 megahertz high-frequency crystal oscillator remained running in the background.\n\nWe resolved the sleep current anomaly by reconfiguring all unused GPIO pins to analog disconnect state and halting high-frequency clock generation before entering sleep. Configure the GPIO pin configuration registers by setting the input buffer disconnect bit on pin 8 and pin 9. Write 32 instead into the clock manager task register to explicitly halt the high-frequency crystal oscillator and retain only the low-power 32 kilohertz RC oscillator.\n\nWe also enabled system-off sleep mode by writing value 1 into the power system-off register. Write 0x01 into the wakeup source mask register to allow wakeup only on accelerometer motion interrupts. After applying these pin reconfigurations and clock shutdown commands, the device deep-sleep current dropped to 2 microamps, achieving 4-year battery life on a single coin cell battery."
+    },
+
+    # Sample 20: Watchdog reset during ECDSA signature verification
+    {
+        "raw_asr": "okay so our secure payment terminal suffered unexpected hardware watchdog reboots whenever the cryptographic engine verified two zero four eight bit e c d s a digital signatures during firmware over the air updates we captured the fault status register using a segger j link debugger and confirmed that the independent watchdog timer counter decremented to zero during long scalar point multiplication loops the cryptographic calculation executed inside a monolithic blocking call lasting one hundred twenty milliseconds while the independent watchdog was configur with a maximum timeout window of sixty milliseconds um we resolved watchdog timeouts buy inserting periodic hardware watchdog refreshes inside the modular scalar multiplication loop configur the independent watchdog reload register buy writing two zero four eight into the counter reload value field right thirty two wait right sixty four instead into the watchdog prescaler register to extend the timeout window to one hundred milliseconds okay so we also configur an interrupt hook buy setting the watchdog early warning interrupt at ten percent of counter reload right zero x a a into the key register to refresh the counter value inside the modular arithmetic callback after configuring the prescaler reload and callback refresh hooks the terminal completed digital signature verification without watchdog timeouts or security state violations during runtime operat",
+        "refined_text": "Our secure payment terminal suffered unexpected hardware watchdog reboots whenever the cryptographic engine verified 2048-bit ECDSA digital signatures during firmware over-the-air updates. We captured the fault status register using a SEGGER J-Link debugger and confirmed that the independent watchdog timer counter decremented to zero during long scalar point multiplication loops. The cryptographic calculation executed inside a monolithic blocking call lasting 120 milliseconds, while the independent watchdog was configured with a maximum timeout window of 60 milliseconds.\n\nWe resolved watchdog timeouts by inserting periodic hardware watchdog refreshes inside the modular scalar multiplication loop. Configure the independent watchdog reload register by writing 2048 into the counter reload value field. Write 64 instead into the watchdog prescaler register to extend the timeout window to 100 milliseconds.\n\nWe also configured an interrupt hook by setting the watchdog early warning interrupt at 10 percent of counter reload. Write 0xAA into the key register to refresh the counter value inside the modular arithmetic callback. After configuring the prescaler reload and callback refresh hooks, the terminal completed digital signature verification without watchdog timeouts or security state violations during runtime operation."
+    }
+]
+
+def main():
+    print(f"Auditing {len(batch)} samples for Batch 44...\n")
+
+    # Load eval set for leakage check
+    eval_file = Path("sft_eval.json")
+    with open(eval_file, "r", encoding="utf-8") as f:
+        eval_data = json.load(f)
+    eval_raws = {e["raw_asr"].strip().lower() for e in eval_data}
+    eval_refs = {e["refined_text"].strip() for e in eval_data}
+
+    all_ok = True
+    tier_counts = {"short": 0, "medium": 0, "long": 0}
+
+    for i, s in enumerate(batch, 1):
+        raw = s.get("raw_asr", "")
+        ref = s.get("refined_text", "")
+
+        # Check leakage
+        if raw.strip().lower() in eval_raws:
+            print(f"Sample {i:02d}: LEAKAGE detected against sft_eval (raw_asr)!")
+            all_ok = False
+        if ref.strip() in eval_refs:
+            print(f"Sample {i:02d}: LEAKAGE detected against sft_eval (refined_text)!")
+            all_ok = False
+
+        v_ok, v_reason = validate_pair(s)
+        c_res, c_reason = clean_sample(raw, ref)
+
+        words = len(ref.split())
+        raw_words = len(raw.split())
+        ratio = words / max(1, raw_words)
+
+        if words < 25:
+            tier = "SHORT"
+            tier_counts["short"] += 1
+        elif words < 90:
+            tier = "MEDIUM"
+            tier_counts["medium"] += 1
+        else:
+            tier = "LONG"
+            tier_counts["long"] += 1
+
+        if not (v_ok and c_res is not None):
+            all_ok = False
+            print(f"Sample {i:02d} [{tier:6s}]: FAIL - validator: {v_reason}, cleaner: {c_reason}")
+        else:
+            print(f"Sample {i:02d} [{tier:6s}]: PASS - words={words:3d}, raw_words={raw_words:3d}, ratio={ratio:.2f}")
+
+    print("\n--- Tier Counts ---")
+    print(f"Short:  {tier_counts['short']} / 4")
+    print(f"Medium: {tier_counts['medium']} / 6")
+    print(f"Long:   {tier_counts['long']} / 10")
+
+    b_ok, b_reason, b_tiers = validate_batch(batch, min_short=4, min_medium=6, min_long=10)
+    print(f"\nvalidate_batch: {b_reason} (passed={b_ok}, returned_tiers={b_tiers})")
+
+    if all_ok and b_ok:
+        out_path = Path("scratch/subagent_batch_44.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(batch, f, indent=2, ensure_ascii=False)
+        print(f"\nAll 20 samples passed! Saved to {out_path}")
+    else:
+        print("\nBatch 44 failed validation checks.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

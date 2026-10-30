@@ -1,0 +1,219 @@
+import json
+import re
+import sys
+import os
+from pathlib import Path
+
+# Add code directory to path
+sys.path.insert(0, os.path.abspath("code"))
+
+from validator import validate_pair, validate_batch, count_active_noise_layers, get_noise_layer_count
+from cleaner import clean_sample
+
+# Load eval set for leakage check
+eval_file = Path("sft_eval.json")
+with open(eval_file, "r", encoding="utf-8") as f:
+    eval_data = json.load(f)
+eval_raws = {e["raw_asr"].strip().lower() for e in eval_data}
+eval_refs = {e["refined_text"].strip() for e in eval_data}
+
+# Domain 2: High-Throughput Data Engineering & Stream Processing
+# Batch 157 Composition: 4 Short (<25 words), 6 Medium (25-89 words), 10 Long (90+ words)
+
+samples = [
+    # =========================================================================
+    # Tier 1: Short Utterances (< 25 words) - Exactly 4 samples (Samples 1-4)
+    # Exactly 1 grammatically complete sentence. Zero newlines. Max 1 cut-word.
+    # Content words >= 6-8. Active gerund ("by <action>"). Zero backticks.
+    # At least 3 noise layers active.
+    # =========================================================================
+
+    # Sample 1: Kafka partition leader rebalancing / consumer offset commit
+    {
+        "raw_asr": "um deduplicat streaming commit records buy reading partition underscore offset across the r p c broker topic",
+        "refined_text": "Deduplicate streaming commit records by reading partition_offset across the RPC broker topic."
+    },
+
+    # Sample 2: Apache Flink unaligned checkpoint barrier alignment
+    {
+        "raw_asr": "uh recalculat stream alignment latency buy checking watermark underscore delay while c p u metrics stabilize",
+        "refined_text": "Recalculate stream alignment latency by checking watermark_delay while CPU metrics stabilize."
+    },
+
+    # Sample 3: Apache Arrow Flight streaming IPC record batch allocation
+    {
+        "raw_asr": "basically allocat eight d m a record buffers buy streaming data into slash data flight storage",
+        "refined_text": "Allocate 8 DMA record buffers by streaming data into /data flight storage."
+    },
+
+    # Sample 4: Debezium PostgreSQL CDC replication slot termination
+    {
+        "raw_asr": "um terminat inactive replication slots buy dropping slot underscore name in post gres instead",
+        "refined_text": "Terminate inactive replication slots by dropping slot_name in Postgres instead."
+    },
+
+    # =========================================================================
+    # Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples (Samples 5-10)
+    # 1 to 3 grammatically complete sentences. Natural \n\n breaks. Max \n\n: words // 25.
+    # Zero backticks. Zero purpose patterns. At least 4 noise layers active.
+    # =========================================================================
+
+    # Sample 5: Kafka Streams state store restore timeout and standby replicas
+    {
+        "raw_asr": "basically our kafka streams application suffered partition rebalance delays when ten stream processors wait twenty processors instead failed state synchronizat across knowed workers uh platform operators accelerated state restoration buy passing dash dash state dir into stream configur options buy tracking changelog underscore offset metadata while developers inspect r p c restore progress across knowed brokers",
+        "refined_text": "Our Kafka Streams application suffered partition rebalance delays when 20 processors instead failed state synchronization across node workers.\n\nPlatform operators accelerated state restoration by passing --state-dir into stream configuration options by tracking changelog_offset metadata while developers inspect RPC restore progress across node brokers."
+    },
+
+    # Sample 6: Vector streaming index ingestion in Qdrant with HNSW indexing and DMA allocation
+    {
+        "raw_asr": "um our streaming vector pipeline stalled collection indexing when segment writers exhausted d m a memory allocat across eight worker knowed instances you know system administrators stabilized write throughput buy passing dash dash indexing threshold into cluster configur settings buy mounting segment indexes under slash var vector storage while engineers right two c p u throttling probes",
+        "refined_text": "Our streaming vector pipeline stalled collection indexing when segment writers exhausted DMA memory allocation across 8 worker node instances.\n\nSystem administrators stabilized write throughput by passing --indexing-threshold into cluster configuration settings by mounting segment indexes under /var vector storage while engineers write 2 CPU throttling probes."
+    },
+
+    # Sample 7: Apache Hudi timeline compaction and metadata table concurrency
+    {
+        "raw_asr": "basically our hudi streaming table experienced severe commit lock contention when four compaction jobs wait eight compaction jobs instead collided during metadata table initializ across knowed workers uh data engineers eliminated commit conflicts buy passing dash dash compaction max memory into table configur parameters buy recording instant underscore time metadata in post gres while operators monitor table file slice sizes",
+        "refined_text": "Our Hudi streaming table experienced severe commit lock contention when 8 compaction jobs instead collided during metadata table initialization across node workers.\n\nData engineers eliminated commit conflicts by passing --compaction-max-memory into table configuration parameters by recording instant_time metadata in Postgres while operators monitor table file slice sizes."
+    },
+
+    # Sample 8: Materialize differential dataflow arrangements and memory spill
+    {
+        "raw_asr": "um our real time streaming engine suffered arrangement memory exhaustion when joins broadcasted sixty thousand records across twelve worker knowed hosts basically streaming architects unblocked memory queues buy passing dash dash arrangement memory into engine configur files buy recalculat of arrangement footprint buy spilling persistent buffers into slash tmp storage while developers right three synthetic r p c health monitors",
+        "refined_text": "Our real-time streaming engine suffered arrangement memory exhaustion when joins broadcasted 60000 records across 12 worker node hosts.\n\nStreaming architects unblocked memory queues by passing --arrangement-memory into engine configuration files by recalculation of arrangement footprint by spilling persistent buffers into /tmp storage while developers write 3 synthetic RPC health monitors."
+    },
+
+    # Sample 9: Redpanda shadow indexing and cloud tiered storage offload
+    {
+        "raw_asr": "basically our redpanda stream cluster encountered segment upload timeouts when cloud tiering saturated network bandwidth across sixteen knowed brokers so um engineers stabilized archive communicat buy passing dash dash cloud storage max connections into broker configur parameters buy tracking segment underscore id offsets while operators wait four hundred seconds instead to deduplicat archived manifests before clearing c p u queues",
+        "refined_text": "Our Redpanda stream cluster encountered segment upload timeouts when cloud tiering saturated network bandwidth across 16 node brokers.\n\nEngineers stabilized archive communication by passing --cloud-storage-max-connections into broker configuration parameters by tracking segment_id offsets while operators wait 400 seconds instead to deduplicate archived manifests before clearing CPU queues."
+    },
+
+    # Sample 10: DuckDB streaming parquet reader and zero-copy Arrow RecordBatch IPC
+    {
+        "raw_asr": "um our stream transformation service stalled batch aggregation when parquet reader threads exhausted system d m a buffers across eight knowed workers basically developers restored batch throughput buy passing dash dash threads into query configur properties buy streaming chunks buy mounting slash data parquet storage while data architects right two a sink i o consumers balancing c p u thread pools",
+        "refined_text": "Our stream transformation service stalled batch aggregation when Parquet reader threads exhausted system DMA buffers across 8 node workers.\n\nDevelopers restored batch throughput by passing --threads into query configuration properties by streaming chunks by mounting /data parquet storage while data architects write 2 asyncio consumers balancing CPU thread pools."
+    },
+
+    # =========================================================================
+    # Tier 3: Long Utterances (90+ words) - Exactly 10 samples (Samples 11-20)
+    # Multi-paragraph structure separated by \n\n. Zero numbered checklists.
+    # Natural spoken engineer narration. Ratio 0.35 - 1.25. Max \n\n: words // 25.
+    # At least 4 noise layers active.
+    # =========================================================================
+
+    # Sample 11: Kafka KRaft metadata log truncation and voter snapshot catch-up
+    {
+        "raw_asr": "basically during our morning peak ingest wave our distributed message bus experienced metadata log truncation when five kraft quorum voters across ten knowed brokers dropped raft heartbeat packets um metadata replication fell eight thousand records behind when disk write latency climbed from four milliseconds up through sixty milliseconds wait eighty milliseconds instead buy causing active broker controllers to reject partition registration r p c requests streaming partition leaders experienced severe ingest backpressure across forty topics site reliability engineers recovered the kraft metadata cluster buy passing dash dash controller quorum voters into broker configur properties buy synchronizat of metadata log segments inside slash data kraft storage volumes operators eliminated voter replication lag buy mapping broker underscore id coordinates while developers right three c p u health probes tracking election heartbeat timing across knowed instances",
+        "refined_text": "During our morning peak ingest wave, our distributed message bus experienced metadata log truncation when 5 KRaft quorum voters across 10 node brokers dropped Raft heartbeat packets. Metadata replication fell 8000 records behind when disk write latency climbed from 4 milliseconds up through 80 milliseconds instead by causing active broker controllers to reject partition registration RPC requests. Streaming partition leaders experienced severe ingest backpressure across 40 topics.\n\nSite reliability engineers recovered the KRaft metadata cluster by passing --controller-quorum-voters into broker configuration properties by synchronization of metadata log segments inside /data kraft storage volumes.\n\nOperators eliminated voter replication lag by mapping broker_id coordinates while developers write 3 CPU health probes tracking election heartbeat timing across node instances."
+    },
+
+    # Sample 12: Apache Flink incremental RocksDB checkpoint savepoint timeout
+    {
+        "raw_asr": "um our stateful flink stream analytics job crashed on checkpoint barrier alignment when rocksdb incremental state snapshot uploads timed out across thirty two knowed task managers basically streaming operators noticed that high cardinality customer session aggregations generated sixty megabytes of s s t files on every checkpoint trigger interval when cloud storage write bandwidth degraded from ten megabytes up through twenty megabytes wait thirty megabytes per second instead buy causing task workers to miss snapshot deadlines across sixteen subtasks streaming pipelines accumulated four hundred thousand records in memory buffers data streaming engineers resolved checkpoint timeouts buy passing dash dash checkpoint dir into worker configur parameters buy recalculat of rocksdb write buffer sizes buy tuning state underscore store underscore id flush settings platform operators allocated snapshot targets inside slash checkpoint flink storage while developers right two d m a telemetry probes monitoring worker c p u load",
+        "refined_text": "Our stateful Flink stream analytics job crashed on checkpoint barrier alignment when RocksDB incremental state snapshot uploads timed out across 32 node task managers. Streaming operators noticed that high-cardinality customer session aggregations generated 60 megabytes of SST files on every checkpoint trigger interval when cloud storage write bandwidth degraded from 10 megabytes up through 30 megabytes per second instead by causing task workers to miss snapshot deadlines across 16 subtasks. Streaming pipelines accumulated 400000 records in memory buffers.\n\nData streaming engineers resolved checkpoint timeouts by passing --checkpoint-dir into worker configuration parameters by recalculation of RocksDB write buffer sizes by tuning state_store_id flush settings.\n\nPlatform operators allocated snapshot targets inside /checkpoint flink storage while developers write 2 DMA telemetry probes monitoring worker CPU load."
+    },
+
+    # Sample 13: Apache Pulsar topic compaction and cursor ledger fencing
+    {
+        "raw_asr": "basically our pulsar enterprise messaging deployment experienced consumer read stalls when background topic compaction fenced cursor ledgers across twenty knowed brokers um key shared subscription consumers attempted reading compacted partition segments while compaction daemons saturated journal write queues after ledgers expanded to fifteen gigabytes wait thirty gigabytes instead buy causing bookkeeper storage daemons to lock read cursors message ingestion pipelines backed up buy delaying downstream analytics buy twenty minutes site reliability engineers restored subscription read throughput buy passing dash dash compaction threshold into broker configur definitions buy enabling parallel cursor recovery workers buy tracking ledger underscore id progress operators terminat stalled compaction tasks buy mounting journal directories inside slash var pulsar storage while platform architects right three synthetic r p c probes validating message delivery c p u metrics",
+        "refined_text": "Our Pulsar enterprise messaging deployment experienced consumer read stalls when background topic compaction fenced cursor ledgers across 20 node brokers. Key-shared subscription consumers attempted reading compacted partition segments while compaction daemons saturated journal write queues after ledgers expanded to 30 gigabytes instead by causing BookKeeper storage daemons to lock read cursors. Message ingestion pipelines backed up by delaying downstream analytics by 20 minutes.\n\nSite reliability engineers restored subscription read throughput by passing --compaction-threshold into broker configuration definitions by enabling parallel cursor recovery workers by tracking ledger_id progress.\n\nOperators terminate stalled compaction tasks by mounting journal directories inside /var pulsar storage while platform architects write 3 synthetic RPC probes validating message delivery CPU metrics."
+    },
+
+    # Sample 14: Spark Structured Streaming stream-stream join state watermark retention
+    {
+        "raw_asr": "um our spark structured streaming analytics pipeline suffered worker out of memory exceptions when stateful stream stream joins accumulated sixty thousand unmatched session records across twenty four knowed executors basically delayed clickstream events arrived past watermark boundaries buy causing state memory tables to expand from two gigabytes up through ten gigabytes wait twenty gigabytes instead executor threads experienced severe garbage collection pauses buy dropping micro batch triggers across sixteen streaming partitions data platform engineers eliminated executor state exhaustion buy passing dash dash watermark delay into spark configur parameters buy recalculat of outer join state retention limits buy tracking session underscore id and event underscore timestamp metadata data streaming operators deduplicat stale join state inside slash checkpoint spark storage while developers right two post gres metrics collectors evaluating executor c p u utilization",
+        "refined_text": "Our Spark Structured Streaming analytics pipeline suffered worker out-of-memory exceptions when stateful stream-stream joins accumulated 60000 unmatched session records across 24 node executors. Delayed clickstream events arrived past watermark boundaries by causing state memory tables to expand from 2 gigabytes up through 20 gigabytes instead. Executor threads experienced severe garbage collection pauses by dropping micro-batch triggers across 16 streaming partitions.\n\nData platform engineers eliminated executor state exhaustion by passing --watermark-delay into Spark configuration parameters by recalculation of outer join state retention limits by tracking session_id and event_timestamp metadata.\n\nData streaming operators deduplicate stale join state inside /checkpoint spark storage while developers write 2 Postgres metrics collectors evaluating executor CPU utilization."
+    },
+
+    # Sample 15: Debezium Postgres CDC streaming logical replication slot WAL saturation
+    {
+        "raw_asr": "basically our change data capture streaming infrastructure faced critical storage saturation when an upstream database maintenance failover orphaned logical replication slots across eight knowed post gres instances um postgres write ahead logs accumulated eighty gigabytes of unconsumed changes when replication consumers disconnected for thirty minutes wait sixty minutes instead buy driving primary disk volume capacity past ninety percent database administrators risked transaction halts buy blocking incoming writes across twenty tables data platform architects rescued database storage buy passing dash dash max slot wal keep size into database configur parameters buy terminat of inactive replication slots buy tracking slot underscore name and l s n underscore offset metadata operators restored schema synchronizat buy storing replication positions inside slash var cdc storage while site reliability engineers right two c p u load monitors validating replication stream stability",
+        "refined_text": "Our change data capture streaming infrastructure faced critical storage saturation when an upstream database maintenance failover orphaned logical replication slots across 8 node Postgres instances. Postgres write-ahead logs accumulated 80 gigabytes of unconsumed changes when replication consumers disconnected for 60 minutes instead by driving primary disk volume capacity past 90 percent. Database administrators risked transaction halts by blocking incoming writes across 20 tables.\n\nData platform architects rescued database storage by passing --max-slot-wal-keep-size into database configuration parameters by termination of inactive replication slots by tracking slot_name and lsn_offset metadata.\n\nOperators restored schema synchronization by storing replication positions inside /var cdc storage while site reliability engineers write 2 CPU load monitors validating replication stream stability."
+    },
+
+    # Sample 16: ClickHouse ReplacingMergeTree real-time deduplication and part merge throttling
+    {
+        "raw_asr": "um our clickhouse stream ingestion cluster experienced write rejections when high frequency micro batch inserts generated nine hundred parts across twelve knowed worker instances basically streaming clients inserted thirty thousand rows per second buy exceeding configured background merge speeds when part counts escalated from two hundred up through five hundred wait eight hundred parts instead the storage engine began throttling incoming write connections buy causing ingestion buffers to drop five hundred thousand events data warehouse engineers stabilized ingestion throughput buy passing dash dash max parts in total into database configur files buy deduplicat of incoming batches buy tracking partition underscore id and block underscore id metadata database administrators unblocked write queues buy mounting fast nvme arrays inside slash var clickhouse storage while developers right three d m a throughput probes monitoring worker c p u performance",
+        "refined_text": "Our ClickHouse stream ingestion cluster experienced write rejections when high-frequency micro-batch inserts generated 900 parts across 12 node worker instances. Streaming clients inserted 30000 rows per second by exceeding configured background merge speeds when part counts escalated from 200 up through 800 parts instead. The storage engine began throttling incoming write connections by causing ingestion buffers to drop 500000 events.\n\nData warehouse engineers stabilized ingestion throughput by passing --max-parts-in-total into database configuration files by deduplication of incoming batches by tracking partition_id and block_id metadata.\n\nDatabase administrators unblocked write queues by mounting fast NVMe arrays inside /var clickhouse storage while developers write 3 DMA throughput probes monitoring worker CPU performance."
+    },
+
+    # Sample 17: Apache Iceberg streaming metadata commit conflict and REST catalog retries
+    {
+        "raw_asr": "basically our iceberg streaming ingest pipeline failed real time commits when twenty concurrent writer workers collided during metadata snapshot generation across knowed brokers um rapid micro batch writes attempted table commits every five seconds which triggered snapshot conflict exceptions after writer retries exceeded five attempts wait ten attempts instead buy causing ingestion pipelines to back up across twelve streaming tables data platform engineers recovered streaming ingest buy passing dash dash commit num retries into table configur settings buy initializ of commit retry exponential backoff buy tracking snapshot underscore id and sequence underscore number metadata platform operators stabilized metadata communicat buy storing table catalog records inside slash data iceberg storage while developers right two post gres metrics probes tracking r p c commit latencies across knowed workers",
+        "refined_text": "Our Iceberg streaming ingest pipeline failed real-time commits when 20 concurrent writer workers collided during metadata snapshot generation across node brokers. Rapid micro-batch writes attempted table commits every 5 seconds, which triggered snapshot conflict exceptions after writer retries exceeded 10 attempts instead by causing ingestion pipelines to back up across 12 streaming tables.\n\nData platform engineers recovered streaming ingest by passing --commit-num-retries into table configuration settings by initialization of commit retry exponential backoff by tracking snapshot_id and sequence_number metadata.\n\nPlatform operators stabilized metadata communication by storing table catalog records inside /data iceberg storage while developers write 2 Postgres metrics probes tracking RPC commit latencies across node workers."
+    },
+
+    # Sample 18: ScyllaDB streaming time-series ingestion and token-aware driver backpressure
+    {
+        "raw_asr": "um our scylladb streaming time series cluster rejected client mutations when streaming ingestion saturated commitlog disk writes across sixteen knowed database nodes basically ingestion drivers pushed fifty thousand sensor updates per second buy overwhelming per shard memtable queues when commitlog write latencies jumped from two milliseconds up through twenty milliseconds wait forty milliseconds instead buy causing token aware client connection pools to exhaust available sockets client daemons experienced severe connection timeouts buy delaying telemetry writes across twenty four partitions site reliability engineers eliminated write stalls buy passing dash dash memtable flush writers into database configur options buy arbitrat of disk write queues buy mapping shard underscore id assignments database operators restored stream write throughput buy mounting striped drives under slash data scylla storage while data platform engineers right three d m a bandwidth monitors evaluating broker c p u utilization",
+        "refined_text": "Our ScyllaDB streaming time-series cluster rejected client mutations when streaming ingestion saturated commitlog disk writes across 16 node database nodes. Ingestion drivers pushed 50000 sensor updates per second by overwhelming per-shard memtable queues when commitlog write latencies jumped from 2 milliseconds up through 40 milliseconds instead by causing token-aware client connection pools to exhaust available sockets. Client daemons experienced severe connection timeouts by delaying telemetry writes across 24 partitions.\n\nSite reliability engineers eliminated write stalls by passing --memtable-flush-writers into database configuration options by arbitration of disk write queues by mapping shard_id assignments.\n\nDatabase operators restored stream write throughput by mounting striped drives under /data scylla storage while data platform engineers write 3 DMA bandwidth monitors evaluating broker CPU utilization."
+    },
+
+    # Sample 19: Apache Arrow Flight SQL streaming broker connection pool exhaustion
+    {
+        "raw_asr": "basically our arrow flight sql telemetry exchange service encountered client disconnections when high throughput flight streams exhausted connection pools across eight knowed server workers um streaming consumers submitted sixty thousand record batches per second buy saturating in memory flight buffer queues when ticket serialization latencies spiked from five milliseconds up through thirty milliseconds wait fifty milliseconds instead buy causing flight clients to encounter broken pipe exceptions downstream analytics pipelines missed real time dashboards buy delaying telemetry reporting for fifteen minutes systems architects stabilized streaming flight exchange buy passing dash dash max flight streams into flight broker configur parameters buy recalculat of record batch buffer thresholds buy tracking ticket underscore id and flight underscore descriptor coordinates operators restored stream synchronizat buy caching stream chunks inside slash tmp flight storage while developers right two a sink i o metrics monitors verifying r p c throughput stability",
+        "refined_text": "Our Arrow Flight SQL telemetry exchange service encountered client disconnections when high-throughput flight streams exhausted connection pools across 8 node server workers. Streaming consumers submitted 60000 record batches per second by saturating in-memory flight buffer queues when ticket serialization latencies spiked from 5 milliseconds up through 50 milliseconds instead by causing flight clients to encounter broken pipe exceptions. Downstream analytics pipelines missed real-time dashboards by delaying telemetry reporting for 15 minutes.\n\nSystems architects stabilized streaming flight exchange by passing --max-flight-streams into flight broker configuration parameters by recalculation of record batch buffer thresholds by tracking ticket_id and flight_descriptor coordinates.\n\nOperators restored stream synchronization by caching stream chunks inside /tmp flight storage while developers write 2 asyncio metrics monitors verifying RPC throughput stability."
+    },
+
+    # Sample 20: Delta Lake streaming liquid clustering and CDF (Change Data Feed) commit amplification
+    {
+        "raw_asr": "um our delta lake streaming ingestion pipeline encountered severe commit lag when change data feed writes generated eight hundred small parquet files across twenty knowed storage partitions basically micro batch streaming commits triggered continuous commit conflicts when writers attempted concurrent transaction log updates after write volumes reached forty thousand events per second wait eighty thousand events per second instead buy forcing table compaction daemons to retry transaction commits fifteen times streaming lakehouse tables experienced forty minutes of replication delay buy stalling financial audit reports data platform engineers eliminated transaction contention buy passing dash dash cdf enabled into delta configur parameters buy allocat of optimized clustering partitions buy tracking commit underscore version and batch underscore id metadata platform operators deduplicat event records buy storing compacted tables inside slash data delta storage while developers right four c p u telemetry probes measuring d m a throughput across knowed storage hosts",
+        "refined_text": "Our Delta Lake streaming ingestion pipeline encountered severe commit lag when change data feed writes generated 800 small Parquet files across 20 node storage partitions. Micro-batch streaming commits triggered continuous commit conflicts when writers attempted concurrent transaction log updates after write volumes reached 80000 events per second instead by forcing table compaction daemons to retry transaction commits 15 times. Streaming lakehouse tables experienced 40 minutes of replication delay by stalling financial audit reports.\n\nData platform engineers eliminated transaction contention by passing --cdf-enabled into Delta configuration parameters by allocation of optimized clustering partitions by tracking commit_version and batch_id metadata.\n\nPlatform operators deduplicate event records by storing compacted tables inside /data delta storage while developers write 4 CPU telemetry probes measuring DMA throughput across node storage hosts."
+    }
+]
+
+print(f"Total samples defined: {len(samples)}")
+assert len(samples) == 20, f"Expected 20 samples, got {len(samples)}"
+
+# 1. Check eval leakage
+leakage = False
+for idx, s in enumerate(samples):
+    r = s["raw_asr"].strip().lower()
+    o = s["refined_text"].strip()
+    if r in eval_raws:
+        print(f"LEAKAGE in sample {idx+1} raw_asr!")
+        leakage = True
+    if o in eval_refs:
+        print(f"LEAKAGE in sample {idx+1} refined_text!")
+        leakage = True
+assert not leakage, "Found eval set leakage!"
+print("PASS: Eval leakage check clean (0 overlaps).")
+
+# 2. Validate individual pairs and cleaners
+all_passed = True
+for idx, s in enumerate(samples):
+    raw = s["raw_asr"]
+    ref = s["refined_text"]
+    words = len(ref.split())
+    layers = get_noise_layer_count(raw)
+    layer_dict = count_active_noise_layers(raw)
+
+    v_ok, v_msg = validate_pair(s, min_noise_layers=4)
+    c_res, c_msg = clean_sample(raw, ref)
+
+    if not v_ok:
+        print(f"FAIL: Sample {idx+1} validate_pair: {v_msg}")
+        all_passed = False
+    elif c_msg != "kept":
+        print(f"FAIL: Sample {idx+1} clean_sample: {c_msg}")
+        all_passed = False
+    else:
+        print(f"Sample {idx+1} (words: {words}, layers: {layers}, dict: {layer_dict}): PASS")
+
+assert all_passed, "Some samples failed pair validation or cleaning!"
+
+# 3. Validate batch
+b_ok, b_msg, b_metrics = validate_batch(samples, min_short=4, min_medium=6, min_long=10, min_noise_layers=4)
+print("\nBatch Validation Result:")
+print(f"  Status: {'PASS' if b_ok else 'FAIL'}")
+print(f"  Reason: {b_msg}")
+print(f"  Metrics: {json.dumps(b_metrics, indent=2)}")
+
+assert b_ok, f"Batch validation failed: {b_msg}"
+
+# 4. Save to scratch/subagent_batch_157.json
+out_file = Path("scratch/subagent_batch_157.json")
+with open(out_file, "w", encoding="utf-8") as f:
+    json.dump(samples, f, ensure_ascii=False, indent=2)
+
+print(f"\nWROTE 20 verified samples to {out_file}")

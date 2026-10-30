@@ -1,0 +1,239 @@
+import json
+import re
+import sys
+import os
+from pathlib import Path
+
+# Add code directory to path
+sys.path.insert(0, os.path.abspath("code"))
+
+from validator import validate_pair, validate_batch, count_active_noise_layers, get_noise_layer_count
+from cleaner import clean_sample
+
+# Load eval set for leakage check
+eval_file = Path("sft_eval.json")
+if eval_file.exists():
+    with open(eval_file, "r", encoding="utf-8") as f:
+        eval_data = json.load(f)
+    eval_raws = {e["raw_asr"].strip().lower() for e in eval_data}
+    eval_refs = {e["refined_text"].strip() for e in eval_data}
+else:
+    eval_raws = set()
+    eval_refs = set()
+
+# Domain 4: Incident Management & Live Troubleshooting RCA
+# Batch 175 Composition: 4 Short (<25 words), 6 Medium (25-89 words), 10 Long (90+ words)
+
+samples = [
+    # =========================================================================
+    # Tier 1: Short Utterances (< 25 words) - Exactly 4 samples (Samples 1-4)
+    # Exactly 1 grammatically complete sentence. Zero newlines. Max 1 cut-word.
+    # Content words >= 6-8. Active gerund ("by <action>"). Zero backticks.
+    # At least 3 noise layers active (target 5-6).
+    # =========================================================================
+
+    # Sample 1: Terminating stalled RPC streaming sockets
+    {
+        "raw_asr": "um terminat stalled r p c streaming sockets buy purging socket underscore queue on edge knowed servers instead",
+        "refined_text": "Terminate stalled RPC streaming sockets by purging socket_queue on edge node servers instead."
+    },
+
+    # Sample 2: Calibrating CPU quota burst limits
+    {
+        "raw_asr": "basically calibrat c p u quota burst limits buy adjusting throttle underscore limit on worker knowed hosts instead",
+        "refined_text": "Calibrate CPU quota burst limits by adjusting throttle_limit on worker node hosts instead."
+    },
+
+    # Sample 3: Configuring Postgres write-ahead-log buffers
+    {
+        "raw_asr": "uh configur post gres write ahead log buffers buy increasing wal underscore buffers on primary knowed instances instead",
+        "refined_text": "Configure Postgres write ahead log buffers by increasing wal_buffers on primary node instances instead."
+    },
+
+    # Sample 4: Initializing kubelet worker eviction thresholds
+    {
+        "raw_asr": "um initializ cube let worker eviction thresholds buy updating memory underscore threshold on cluster knowed machines instead",
+        "refined_text": "Initialize kubelet worker eviction thresholds by updating memory_threshold on cluster node machines instead."
+    },
+
+    # =========================================================================
+    # Tier 2: Medium Utterances (25 to 89 words) - Exactly 6 samples (Samples 5-10)
+    # 1 to 3 grammatically complete sentences. Natural \n\n breaks. Max \n\n: words // 25.
+    # Zero backticks. Zero purpose patterns. At least 4 noise layers active (target 6).
+    # =========================================================================
+
+    # Sample 5: Vault token lease storage deadlock under burst authentication
+    {
+        "raw_asr": "um our vault security cluster suffered token lookup stalls when twenty worker knowed clients overwhelmed storage leases across twenty seconds wait forty seconds instead basically security administrators stabilized cluster operat buy tuning lease underscore storage buy passing dash dash lease ttl into cluster configur manifests while reliability engineers right two r p c lease monitors",
+        "refined_text": "Our Vault security cluster suffered token lookup stalls when 20 worker node clients overwhelmed storage leases across 40 seconds instead.\n\nSecurity administrators stabilized cluster operations by tuning lease_storage by passing --lease-ttl into cluster configuration manifests while reliability engineers write 2 RPC lease monitors."
+    },
+
+    # Sample 6: VictoriaMetrics partition compaction IO starvation
+    {
+        "raw_asr": "basically our victoriametrics time series cluster experienced query execution timeouts when twenty four knowed ingesters saturated disk buffers across thirty seconds wait sixty seconds instead um database administrators restored storage communicat buy adjusting compaction underscore queue buy passing dash dash max storage into engine configur manifests while platform operators right two c p u compaction probes",
+        "refined_text": "Our VictoriaMetrics time series cluster experienced query execution timeouts when 24 node ingesters saturated disk buffers across 60 seconds instead.\n\nDatabase administrators restored storage communication by adjusting compaction_queue by passing --max-storage into engine configuration manifests while platform operators write 2 CPU compaction probes."
+    },
+
+    # Sample 7: OpenTelemetry Collector memory limiter drop under trace explosion
+    {
+        "raw_asr": "um our telemetry collector fleet dropped incoming spans when thirty worker knowed agents exceeded memory buffers across twenty seconds wait fifty seconds instead basically observability engineers restored pipeline operat buy adjusting memory underscore limiter buy passing dash dash ballast size into collector configur manifests while reliability engineers right two r p c queue monitors",
+        "refined_text": "Our telemetry collector fleet dropped incoming spans when 30 worker node agents exceeded memory buffers across 50 seconds instead.\n\nObservability engineers restored pipeline operations by adjusting memory_limiter by passing --ballast-size into collector configuration manifests while reliability engineers write 2 RPC queue monitors."
+    },
+
+    # Sample 8: Cilium eBPF map entry table exhaustion dropping pod routing
+    {
+        "raw_asr": "basically our network service mesh suffered connection packet drops when eighteen knowed routers exhausted ebpf map entries across twenty seconds wait forty seconds instead um network platform engineers restored mesh communicat buy adjusting table underscore limit buy passing dash dash bpf limit into cilium configur parameters while site engineers right two c p u latency monitors",
+        "refined_text": "Our network service mesh suffered connection packet drops when 18 node routers exhausted eBPF map entries across 40 seconds instead.\n\nNetwork platform engineers restored mesh communication by adjusting table_limit by passing --bpf-limit into Cilium configuration parameters while site engineers write 2 CPU latency monitors."
+    },
+
+    # Sample 9: Dgraph cluster zero coordinator lease expiration triggering alpha node split-brain
+    {
+        "raw_asr": "um our graph database cluster suffered write mutation stalls when sixteen worker knowed alphas lost coordinator leases across twenty seconds wait forty seconds instead basically database administrators restored database operat buy adjusting lease underscore duration buy passing dash dash alpha host into dgraph configur parameters while site reliability engineers right two r p c lease probes",
+        "refined_text": "Our graph database cluster suffered write mutation stalls when 16 worker node alphas lost coordinator leases across 40 seconds instead.\n\nDatabase administrators restored database operations by adjusting lease_duration by passing --alpha-host into Dgraph configuration parameters while site reliability engineers write 2 RPC lease probes."
+    },
+
+    # Sample 10: Linkerd proxy mTLS certificate expiration dropping mesh ingress requests
+    {
+        "raw_asr": "basically our service mesh ingress dropped secure traffic when twelve edge knowed proxies encountered mutual tls certificate verification errors across twenty seconds wait thirty seconds instead um platform engineers restored proxy communicat buy renewing cert underscore bundle buy passing dash dash identity trust into linkerd configur parameters while systems engineers right two wi re shark handshake probes",
+        "refined_text": "Our service mesh ingress dropped secure traffic when 12 edge node proxies encountered mutual TLS certificate verification errors across 30 seconds instead.\n\nPlatform engineers restored proxy communication by renewing cert_bundle by passing --identity-trust into Linkerd configuration parameters while systems engineers write 2 Wireshark handshake probes."
+    },
+
+    # =========================================================================
+    # Tier 3: Long Utterances (90+ words) - Exactly 10 samples (Samples 11-20)
+    # Multi-paragraph structure separated by \n\n. Zero numbered checklist stereotypes.
+    # Spoken engineer narration. Zero backticks. Zero purpose patterns.
+    # At least 4 noise layers active (target 6 layers active).
+    # =========================================================================
+
+    # Sample 11: Sev-1 Incident Postmortem: Envoy WebAssembly (WASM) plugin panic crashing edge worker threads
+    {
+        "raw_asr": "basically during morning traffic surges our edge proxy gateways encountered thread termination panics when custom wasm filter plugins crashed worker processes across sixteen knowed proxies wait twenty proxies instead um memory safety panics inside compiled filter routines triggered immediate worker restarts buy driving proxy c p u utiliz to ninety three percent across forty edge instances p ninety five request latency surged from six milliseconds up through two four zero zero milliseconds buy dropping thirty percent of incoming api requests incident responders isolated the primary trigger inside filter underscore runtime dot conf buy examining crash backtraces across slash var slash log platform engineers stabilized proxy communicat buy disabling wasm filter chains buy passing dash dash concurrency into envoy configur parameters while site reliability engineers right two r p c filter health probes",
+        "refined_text": "During morning traffic surges, our edge proxy gateways encountered thread termination panics when custom WASM filter plugins crashed worker processes across 20 node proxies instead. Memory safety panics inside compiled filter routines triggered immediate worker restarts by driving proxy CPU utilization to 93 percent across 40 edge instances.\n\nP95 request latency surged from 6 milliseconds up through 2400 milliseconds by dropping 30 percent of incoming API requests. Incident responders isolated the primary trigger inside filter_runtime.conf by examining crash backtraces across /var/log.\n\nPlatform engineers stabilized proxy communication by disabling WASM filter chains by passing --concurrency into Envoy configuration parameters while site reliability engineers write 2 RPC filter health probes."
+    },
+
+    # Sample 12: Production Incident RCA: ScyllaDB io_uring submission queue stall causing SSTable write timeouts
+    {
+        "raw_asr": "um our distributed storage fleet suffered database write stalls when io uring submission queues experienced kernel block layer delays across twelve knowed replicas wait eighteen replicas instead basically asynchronous write dispatch queues filled to maximum capacity buy driving node c p u utiliz to ninety one percent across twenty database instances p ninety nine write commit latency jumped from four milliseconds up through sixteen hundred milliseconds buy causing status five zero three errors on eight thousand customer ledger transactions incident responders diagnosed the primary trigger inside scylla underscore storage dot yaml buy inspecting io latency histograms across slash proc storage reliability engineers restored disk synchronizat buy adjusting max underscore io underscore depth buy passing dash dash ring size into engine configur manifests while infrastructure operators right two r p c disk throughput probes",
+        "refined_text": "Our distributed storage fleet suffered database write stalls when io_uring submission queues experienced kernel block layer delays across 18 node replicas instead. Asynchronous write dispatch queues filled to maximum capacity by driving node CPU utilization to 91 percent across 20 database instances.\n\nP99 write commit latency jumped from 4 milliseconds up through 1600 milliseconds by causing status 503 errors on 8000 customer ledger transactions. Incident responders diagnosed the primary trigger inside scylla_storage.yaml by inspecting IO latency histograms across /proc.\n\nStorage reliability engineers restored disk synchronization by adjusting max_io_depth by passing --ring-size into engine configuration manifests while infrastructure operators write 2 RPC disk throughput probes."
+    },
+
+    # Sample 13: Live Incident Troubleshooting: Apache Flink RocksDB state backend checkpoint timeout on distributed storage
+    {
+        "raw_asr": "basically our stream processing job entered continuous restart loops when state checkpoint uploads timed out across ten knowed job managers wait sixteen job managers instead um heavy incremental checkpoint serialization blocked worker execution threads buy driving c p u utiliz to ninety two percent across thirty compute tasks checkpoint failures triggered pipeline termination buy dropping forty thousand stream records across twenty minutes p ninety five checkpoint latency climbed from eight milliseconds up through two two zero zero milliseconds incident responders isolated the primary trigger inside flink underscore pipeline dot yaml buy analyzing task manager stack traces across slash var slash log platform engineers stabilized state synchronizat buy tuning state underscore storage buy passing dash dash checkpoint interval into flink configur settings while data reliability engineers right two a sink checkpoint duration monitors",
+        "refined_text": "Our stream processing job entered continuous restart loops when state checkpoint uploads timed out across 16 node job managers instead. Heavy incremental checkpoint serialization blocked worker execution threads by driving CPU utilization to 92 percent across 30 compute tasks.\n\nCheckpoint failures triggered pipeline termination by dropping 40000 stream records across 20 minutes. P95 checkpoint latency climbed from 8 milliseconds up through 2200 milliseconds.\n\nIncident responders isolated the primary trigger inside flink_pipeline.yaml by analyzing task manager stack traces across /var/log. Platform engineers stabilized state synchronization by tuning state_storage by passing --checkpoint-interval into Flink configuration settings while data reliability engineers write 2 async checkpoint duration monitors."
+    },
+
+    # Sample 14: Sev-1 Outage Postmortem: Spinnaker Clouddriver cache synchronization deadlock under cluster scaling
+    {
+        "raw_asr": "um during rapid cluster deployment our continuous delivery pipeline experienced execution deadlocks when clouddriver caching agents lost synchronization across fourteen knowed instances wait twenty instances instead basically concurrent provider inventory scans exhausted database connection slots buy driving c p u utiliz to ninety five percent across forty worker pods pipeline deployment stages failed buy aborting six thousand deployment jobs across thirty minutes p ninety nine deployment latency climbed from ten milliseconds up through twenty eight hundred milliseconds wait three zero zero zero milliseconds instead buy generating widespread incident escalations incident responders diagnosed the primary trigger inside clouddriver underscore service dot yml buy inspecting thread dump metrics across slash proc site reliability engineers restored provider communicat buy tuning caching underscore interval buy passing dash dash poll cycle into clouddriver configur settings while infrastructure developers right two r p c deployment queue monitors",
+        "refined_text": "During rapid cluster deployment, our continuous delivery pipeline experienced execution deadlocks when Clouddriver caching agents lost synchronization across 20 node instances instead. Concurrent provider inventory scans exhausted database connection slots by driving CPU utilization to 95 percent across 40 worker pods.\n\nPipeline deployment stages failed by aborting 6000 deployment jobs across 30 minutes. P99 deployment latency climbed from 10 milliseconds up through 3000 milliseconds instead by generating widespread incident escalations.\n\nIncident responders diagnosed the primary trigger inside clouddriver_service.yml by inspecting thread dump metrics across /proc. Site reliability engineers restored provider communication by tuning caching_interval by passing --poll-cycle into Clouddriver configuration settings while infrastructure developers write 2 RPC deployment queue monitors."
+    },
+
+    # Sample 15: Production Incident RCA: StarRocks Frontend metadata journal sync timeout during leader catalog update
+    {
+        "raw_asr": "basically our analytical query engine rejected incoming sql queries when frontend metadata journal sync stalled across eight knowed catalog leaders wait twelve catalog leaders instead um slow disk flushes on follower nodes prevented metadata consensus buy driving broker c p u utiliz to ninety percent across twenty query coordinators p ninety five query compilation latency surged from five milliseconds up through eighteen hundred milliseconds buy dropping twenty five percent of analytical dashboards incident responders isolated the primary trigger inside fe underscore catalog dot conf buy reviewing catalog replication logs across slash var slash log database administrators stabilized catalog synchronizat buy adjusting journal underscore delay buy passing dash dash bdbje timeout into engine configur manifests while data platform engineers right two r p c catalog health probes",
+        "refined_text": "Our analytical query engine rejected incoming SQL queries when frontend metadata journal sync stalled across 12 node catalog leaders instead. Slow disk flushes on follower nodes prevented metadata consensus by driving broker CPU utilization to 90 percent across 20 query coordinators.\n\nP95 query compilation latency surged from 5 milliseconds up through 1800 milliseconds by dropping 25 percent of analytical dashboards. Incident responders isolated the primary trigger inside fe_catalog.conf by reviewing catalog replication logs across /var/log.\n\nDatabase administrators stabilized catalog synchronization by adjusting journal_delay by passing --bdbje-timeout into engine configuration manifests while data platform engineers write 2 RPC catalog health probes."
+    },
+
+    # Sample 16: Live Incident Troubleshooting: Vector log aggregator sink backpressure stalling memory-buffered pipelines
+    {
+        "raw_asr": "um our centralized logging fleet suffered message ingestion drops when downstream storage sinks applied severe backpressure across twelve knowed log forwarders wait eighteen log forwarders instead basically in memory buffers exceeded configured memory thresholds buy forcing forwarders to drop fifty thousand telemetry events p ninety nine event delivery latency jumped from three milliseconds up through fourteen hundred milliseconds buy triggering status five zero four gateway timeouts across thirty downstream microservices incident responders diagnosed the primary trigger inside vector underscore pipeline dot toml buy evaluating buffer watermark logs across slash proc logging engineers restored pipeline communicat buy tuning buffer underscore capacity buy passing dash dash buffer size into vector configur parameters while systems engineers right two c p u log intake monitors",
+        "refined_text": "Our centralized logging fleet suffered message ingestion drops when downstream storage sinks applied severe backpressure across 18 node log forwarders instead. In-memory buffers exceeded configured memory thresholds by forcing forwarders to drop 50000 telemetry events.\n\nP99 event delivery latency jumped from 3 milliseconds up through 1400 milliseconds by triggering status 504 gateway timeouts across 30 downstream microservices. Incident responders diagnosed the primary trigger inside vector_pipeline.toml by evaluating buffer watermark logs across /proc.\n\nLogging engineers restored pipeline communication by tuning buffer_capacity by passing --buffer-size into Vector configuration parameters while systems engineers write 2 CPU log intake monitors."
+    },
+
+    # Sample 17: Incident Postmortem: Keycloak OAuth token signing keystore lock contention under login storm
+    {
+        "raw_asr": "basically our single sign on authentication gateway suffered request timeouts when token signing cryptographic key rotation encountered thread contention across ten knowed authenticators wait sixteen authenticators instead um concurrent signature requests blocked on java keystore synchronizat buy driving container c p u utiliz to ninety four percent across thirty service instances authentication requests failed buy generating status five zero zero errors across eight thousand user logins p ninety five token issue latency spiked from seven milliseconds up through two six zero zero milliseconds incident responders isolated the primary trigger inside keycloak underscore server dot json buy reviewing authentication trace events across slash var slash log security platform engineers stabilized service operat buy updating key underscore cache buy passing dash dash cache size into keycloak configur manifests while identity engineers right two r p c token response probes",
+        "refined_text": "Our single sign-on authentication gateway suffered request timeouts when token signing cryptographic key rotation encountered thread contention across 16 node authenticators instead. Concurrent signature requests blocked on Java keystore synchronization by driving container CPU utilization to 94 percent across 30 service instances.\n\nAuthentication requests failed by generating status 500 errors across 8000 user logins. P95 token issue latency spiked from 7 milliseconds up through 2600 milliseconds.\n\nIncident responders isolated the primary trigger inside keycloak_server.json by reviewing authentication trace events across /var/log. Security platform engineers stabilized service operations by updating key_cache by passing --cache-size into Keycloak configuration manifests while identity engineers write 2 RPC token response probes."
+    },
+
+    # Sample 18: Sev-1 Outage RCA: Nomad server Raft heartbeats delayed by client evaluation scheduling spike
+    {
+        "raw_asr": "um our workload scheduling cluster suffered node status flapping when nomad server consensus heartbeats dropped across eight knowed orchestrators wait fourteen orchestrators instead basically high volume batch evaluation queues starved leader consensus threads buy driving host c p u utiliz to ninety one percent across twenty cluster servers nomad marked twenty five hosts as lost buy failing cube ctl workload dispatch with status five zero three errors across forty jobs incident responders diagnosed the primary trigger inside nomad underscore server dot hcl buy inspecting raft election traces across slash proc platform engineers stabilized cluster communicat buy adjusting heartbeat underscore grace buy passing dash dash eval concurrency into nomad configur parameters while reliability engineers right two automated r p c scheduler monitors",
+        "refined_text": "Our workload scheduling cluster suffered node status flapping when Nomad server consensus heartbeats dropped across 14 node orchestrators instead. High-volume batch evaluation queues starved leader consensus threads by driving host CPU utilization to 91 percent across 20 cluster servers.\n\nNomad marked 25 hosts as lost by failing kubectl workload dispatch with status 503 errors across 40 jobs. Incident responders diagnosed the primary trigger inside nomad_server.hcl by inspecting Raft election traces across /proc.\n\nPlatform engineers stabilized cluster communication by adjusting heartbeat_grace by passing --eval-concurrency into Nomad configuration parameters while reliability engineers write 2 automated RPC scheduler monitors."
+    },
+
+    # Sample 19: Live Troubleshooting RCA: Dragonfly cache cluster connection pool starvation on client pipelining
+    {
+        "raw_asr": "basically our high throughput cache tier experienced connection drops when client pipelining bursts exhausted epoll socket queues across sixteen knowed cache nodes wait twenty two cache nodes instead um unacknowledged pipeline batches saturated connection worker buffers buy driving server c p u utiliz to ninety two percent across forty cache instances p ninety nine read request latency climbed from four milliseconds up through sixteen hundred milliseconds buy dropping twenty thousand cache lookups incident responders isolated the underlying defect inside dragonfly underscore cache dot conf buy evaluating wi re shark connection packet traces across slash etc cache platform administrators restored cluster operat buy adjusting max underscore pipeline buy passing dash dash max clients into dragonfly configur manifests while site reliability engineers right two c p u socket queue monitors",
+        "refined_text": "Our high-throughput cache tier experienced connection drops when client pipelining bursts exhausted epoll socket queues across 22 node cache nodes instead. Unacknowledged pipeline batches saturated connection worker buffers by driving server CPU utilization to 92 percent across 40 cache instances.\n\nP99 read request latency climbed from 4 milliseconds up through 1600 milliseconds by dropping 20000 cache lookups. Incident responders isolated the underlying defect inside dragonfly_cache.conf by evaluating Wireshark connection packet traces across /etc.\n\nCache platform administrators restored cluster operations by adjusting max_pipeline by passing --max-clients into Dragonfly configuration manifests while site reliability engineers write 2 CPU socket queue monitors."
+    },
+
+    # Sample 20: Incident Postmortem: Envoy HTTP/2 CONTINUATION frame flood triggering DoS protection worker resets
+    {
+        "raw_asr": "um our public ingress gateway encountered sudden worker resets when malicious client streams sent continuous continuation frames across twelve knowed proxies wait eighteen proxies instead basically memory allocation limits triggered defensive stream terminations buy driving edge c p u utiliz to ninety five percent across thirty proxy instances p ninety five ingress latency spiked from six milliseconds up through two two zero zero milliseconds buy generating status five zero three errors across ten thousand client requests incident responders diagnosed the primary trigger inside envoy underscore edge dot yaml buy analyzing proxy access error logs across slash var slash log edge platform engineers stabilized proxy communicat buy tuning max underscore continuation underscore frames buy passing dash dash stream limit into envoy configur settings while security engineers right two r p c gateway health probes",
+        "refined_text": "Our public ingress gateway encountered sudden worker resets when malicious client streams sent continuous continuation frames across 18 node proxies instead. Memory allocation limits triggered defensive stream terminations by driving edge CPU utilization to 95 percent across 30 proxy instances.\n\nP95 ingress latency spiked from 6 milliseconds up through 2200 milliseconds by generating status 503 errors across 10000 client requests. Incident responders diagnosed the primary trigger inside envoy_edge.yaml by analyzing proxy access error logs across /var/log.\n\nEdge platform engineers stabilized proxy communication by tuning max_continuation_frames by passing --stream-limit into Envoy configuration settings while security engineers write 2 RPC gateway health probes."
+    }
+]
+
+def main():
+    print(f"Total samples defined: {len(samples)}")
+    
+    # Check eval set leakage
+    leakage = False
+    for i, s in enumerate(samples):
+        r = s["raw_asr"].strip().lower()
+        rf = s["refined_text"].strip()
+        if r in eval_raws:
+            print(f"ERROR: Sample {i+1} raw_asr leaks into eval set!")
+            leakage = True
+        if rf in eval_refs:
+            print(f"ERROR: Sample {i+1} refined_text leaks into eval set!")
+            leakage = True
+    if not leakage:
+        print("PASS: Eval leakage check clean (0 overlaps).")
+    else:
+        sys.exit(1)
+
+    # Validate each pair
+    all_valid = True
+    tier_counts = {"short": 0, "medium": 0, "long": 0}
+    layer_counts = []
+
+    for i, s in enumerate(samples):
+        v_ok, v_reason = validate_pair(s, min_noise_layers=4)
+        c_res, c_reason = clean_sample(s["raw_asr"], s["refined_text"])
+        layers = count_active_noise_layers(s["raw_asr"])
+        layer_count = get_noise_layer_count(s["raw_asr"])
+        layer_counts.append(layer_count)
+        words = len(s["refined_text"].split())
+
+        if words < 25:
+            tier_counts["short"] += 1
+        elif words < 90:
+            tier_counts["medium"] += 1
+        else:
+            tier_counts["long"] += 1
+        
+        status = "OK" if (v_ok and c_reason == "kept") else "FAIL"
+        if status == "FAIL":
+            all_valid = False
+            print(f"Sample {i+1} (tier: {words} words, layers: {layer_count}): {status}")
+            if not v_ok:
+                print(f"  Validator: {v_reason}")
+            if c_reason != "kept":
+                print(f"  Cleaner: {c_reason}")
+        else:
+            active = [k for k, v in layers.items() if v]
+            print(f"Sample {i+1:02d} (tier words: {words:3d}, layers: {layer_count} [{', '.join(active)}]): PASS")
+
+    # Batch validation
+    batch_ok, batch_reason, metrics = validate_batch(samples, min_short=4, min_medium=6, min_long=10, min_noise_layers=4)
+    print("\nBatch Validation Result:")
+    print("  Status:", "PASS" if batch_ok else "FAIL")
+    print("  Reason:", batch_reason)
+    print("  Tier Counts:", tier_counts)
+    print("  Average Noise Layers:", f"{sum(layer_counts)/len(layer_counts):.2f}")
+    print("  Metrics:", json.dumps(metrics, indent=2))
+
+    if all_valid and batch_ok:
+        out_path = Path("scratch/subagent_batch_175.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(samples, f, ensure_ascii=False, indent=2)
+        print(f"\nWROTE {len(samples)} verified samples to {out_path}")
+    else:
+        print("\nCANNOT WRITE: Fix errors above.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

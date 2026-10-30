@@ -1,0 +1,176 @@
+import json
+import sys
+import re
+
+sys.path.insert(0, "code")
+from validator import validate_pair, validate_batch
+from cleaner import clean_sample
+
+def build_batch_42():
+    batch = [
+        # --- SHORT UTTERANCES (4 samples: <25 words, exactly 1 sentence, 0 newlines, max 1 cut-word) ---
+        {
+            # Sample 1: Cursor regex semver pattern refactoring
+            "raw_asr": "instruct cur sor two refact the semantic version regex pattern buy matching prerelease tags and build metadata",
+            "refined_text": "Instruct Cursor to refactor the semantic version regex pattern by matching prerelease tags and build metadata."
+        },
+        {
+            # Sample 2: Aider AST transformation for deprecated hooks
+            "raw_asr": "ask aid er two generat a python a s t transformation script replacing deprecated event hooks with class listeners",
+            "refined_text": "Ask Aider to generate a Python AST transformation script replacing deprecated event hooks with class listeners."
+        },
+        {
+            # Sample 3: Copilot unit test generation for oauth tokens
+            "raw_asr": "tell co pilot two right four mock unit test cases buy validating oauth token expiry callbacks",
+            "refined_text": "Tell Copilot to write 4 mock unit test cases by validating OAuth token expiry callbacks."
+        },
+        {
+            # Sample 4: Windsurf MCP tool schema configuration
+            "raw_asr": "prompt wind surf two configur an m c p tool schema buy exposing sqlite query execution capabilities",
+            "refined_text": "Prompt Windsurf to configure an MCP tool schema by exposing SQLite query execution capabilities."
+        },
+
+        # --- MEDIUM UTTERANCES (6 samples: 25-89 words, 1-3 sentences, natural \n\n break) ---
+        {
+            # Sample 5: Cursor async database session queries
+            "raw_asr": "basically ask cur sor two refact our synchronous database session queries inside api routes dot py buy replacing session query calls with select statements wait use a sink session execute instead um write three pie test a sink i o test fixtures asserting session rollback on database errors",
+            "refined_text": "Ask Cursor to refactor our synchronous database session queries inside api_routes.py by replacing session query calls with select statements, using async session execute instead.\n\nWrite 3 pytest-asyncio test fixtures asserting session rollback on database errors."
+        },
+        {
+            # Sample 6: Aider structlog key-value logging
+            "raw_asr": "instruct aid er two refact string interpolation logging inside celery task dot py buy adopting struct log key value pairs wait use context bound loggers instead um generat four unit test assertions verifying that json log entries include trace id and duration milliseconds",
+            "refined_text": "Instruct Aider to refactor string interpolation logging inside celery_task.py by adopting structlog key-value pairs, using context-bound loggers instead.\n\nGenerate 4 unit test assertions verifying that JSON log entries include trace ID and duration milliseconds."
+        },
+        {
+            # Sample 7: Windsurf AST Babel import transformation
+            "raw_asr": "tell wind surf two implement an a s t transformation script buy parsing javascript modules using babel parser two conver require calls into dynamic import expressions um write two j est tests asserting that default exports and named destructuring imports parse correctly",
+            "refined_text": "Tell Windsurf to implement an AST transformation script by parsing JavaScript modules using Babel parser to convert require calls into dynamic import expressions.\n\nWrite 2 Jest tests asserting that default exports and named destructuring imports parse correctly."
+        },
+        {
+            # Sample 8: Copilot PR review bot tool schema
+            "raw_asr": "prompt co pilot two configur a function calling schema four a pull request review agent buy defining tool parameters in review agent dot py wait use json schema objects instead um right three unit tests validating that file diff inputs reject paths exceeding two hundred characters",
+            "refined_text": "Prompt Copilot to configure a function calling schema for a pull request review agent by defining tool parameters in review_agent.py, using JSON schema objects instead.\n\nWrite 3 unit tests validating that file diff inputs reject paths exceeding 200 characters."
+        },
+        {
+            # Sample 9: Cursor router trie optimization
+            "raw_asr": "ask cur sor two optimiz our route matching engine buy converting regex compilation inside router dot py into a trie lookup structure wait use precompiled pattern arrays instead um implement five pie test unit tests checking wildcard path parameters and trailing slash handling",
+            "refined_text": "Ask Cursor to optimize our route matching engine by converting regex compilation inside router.py into a trie lookup structure, using precompiled pattern arrays instead.\n\nImplement 5 pytest unit tests checking wildcard path parameters and trailing slash handling."
+        },
+        {
+            # Sample 10: Aider prompt chain retry backoff
+            "raw_asr": "basically prompt aid er two implement an agentic prompt chain inside chain runner dot py buy chaining intent classification with payload extraction wait add exponential backoff retry logic instead um generat four pie test mocks simulating rate limited provider responses",
+            "refined_text": "Prompt Aider to implement an agentic prompt chain inside chain_runner.py by chaining intent classification with payload extraction, adding exponential backoff retry logic instead.\n\nGenerate 4 pytest mocks simulating rate limited provider responses."
+        },
+
+        # --- LONG UTTERANCES (10 samples: 90+ words, multi-paragraph \n\n, zero checklists) ---
+        {
+            # Sample 11: Cursor AST NodeTransformer Pydantic visitor
+            "raw_asr": "basically ask cur sor two refact our data validation pipeline inside schema transformer dot py buy replacing dynamic dictionary transformations with an a s t node visitor pattern our existing data ingestion pipeline processes heterogeneous json payloads buy evaluating dictionary keys at runtime which causes unhandled key error exceptions when upstream providers omit optional attributes um instruct cur sor two implement a custom node visitor class extending ast dot node transformer that traverses function definition nodes and rewrites dictionary subscript lookups into validated pydantic field accesses wait use attribute lookup nodes instead of subscript nodes when target classes define type annotations okay so tell cur sor two generat eight pie test unit test cases verifying that nested dictionary structures transform into nested pydantic models and write assertion tests checking that invalid attribute access raises validation error exceptions across thirty two test fixture samples",
+            "refined_text": "Ask Cursor to refactor our data validation pipeline inside schema_transformer.py by replacing dynamic dictionary transformations with an AST node visitor pattern. Our existing data ingestion pipeline processes heterogeneous JSON payloads by evaluating dictionary keys at runtime, which causes unhandled key error exceptions when upstream providers omit optional attributes.\n\nInstruct Cursor to implement a custom node visitor class extending ast.NodeTransformer that traverses function definition nodes and rewrites dictionary subscript lookups into validated Pydantic field accesses, using attribute lookup nodes instead of subscript nodes when target classes define type annotations.\n\nTell Cursor to generate 8 pytest unit test cases verifying that nested dictionary structures transform into nested Pydantic models, and write assertion tests checking that invalid attribute access raises validation error exceptions across 32 test fixture samples."
+        },
+        {
+            # Sample 12: Aider LLM fallback routing & token telemetry
+            "raw_asr": "um instruct aid er two refact our conversational agent routing engine inside prompt orchestrator dot py buy introducing dynamic fallback provider routing our production chat interface currently routes all user completions through a single commercial model endpoint which produces service outages when the remote api experiences rate limit throttling or five hundred three gateway errors basically ask aid er two implement an agentic fallback strategy buy attempting completion through our secondary provider wait trigger fallback when receiving status codes four hundred twenty nine or five hundred instead tell aid er two record token consumption telemetry buy tracking prompt tokens completion tokens and total round trip latency inside a prometheus summary metric um write six pie test fixtures simulating provider failures and verify that fallback model switching occurs without dropping conversational history across twenty test sessions",
+            "refined_text": "Instruct Aider to refactor our conversational agent routing engine inside prompt_orchestrator.py by introducing dynamic fallback provider routing. Our production chat interface currently routes all user completions through a single commercial model endpoint, which produces service outages when the remote API experiences rate limit throttling or 503 gateway errors.\n\nAsk Aider to implement an agentic fallback strategy by attempting completion through our secondary provider, triggering fallback when receiving status codes 429 or 500 instead. Tell Aider to record token consumption telemetry by tracking prompt tokens, completion tokens, and total round-trip latency inside a Prometheus summary metric.\n\nWrite 6 pytest fixtures simulating provider failures, and verify that fallback model switching occurs without dropping conversational history across 20 test sessions."
+        },
+        {
+            # Sample 13: Windsurf regex atomic groups ReDoS mitigation
+            "raw_asr": "basically tell wind surf two refact our input sanitization filter inside pattern evaluator dot py buy replacing vulnerable nested regex quantifiers our current regex pattern parses markdown code blocks and command backticks using greedy wildcards which causes catastrophic backtracking and thread starvation when processing adversarial text prompts containing fifty thousand whitespace characters um ask wind surf two rewrite the regular express buy compiling non backtracking atomic groups wait use possessive matching or finite automata lookups instead tell wind surf two benchmark the updated regex buy processing one thousand synthetic malformed inputs and write five pie test unit tests verifying that evaluation time stays under ten milliseconds per document across twelve test batches",
+            "refined_text": "Tell Windsurf to refactor our input sanitization filter inside pattern_evaluator.py by replacing vulnerable nested regex quantifiers. Our current regex pattern parses markdown code blocks and command backticks using greedy wildcards, which causes catastrophic backtracking and thread starvation when processing adversarial text prompts containing 50000 whitespace characters.\n\nAsk Windsurf to rewrite the regular expression by compiling non-backtracking atomic groups, using possessive matching or finite automata lookups instead. Tell Windsurf to benchmark the updated regex by processing 1000 synthetic malformed inputs.\n\nWrite 5 pytest unit tests verifying that evaluation time stays under 10 milliseconds per document across 12 test batches."
+        },
+        {
+            # Sample 14: Copilot Git branch agent tool invocations
+            "raw_asr": "okay so ask co pilot two implement an agentic tool execution module inside git branch agent dot py buy defining structured tool invocations four git branch automation our developer workflow requires autonomous agents two inspect merged pull requests delete stale remote feature branches and rebase active topic branches onto main um tell co pilot two implement three distinct tool calling functions four listing merged branches running git rebase and executing remote deletion wait require dry run confirmation flags before executing branch deletion instead tell co pilot two wrap each git subprocess execution inside try except blocks buy capturing exit codes and standard error streams um write eight pie test unit tests using subprocess mocking two verify that non zero return codes trigger structured tool error responses across sixteen branch scenarios",
+            "refined_text": "Ask Copilot to implement an agentic tool execution module inside git_branch_agent.py by defining structured tool invocations for Git branch automation. Our developer workflow requires autonomous agents to inspect merged pull requests, delete stale remote feature branches, and rebase active topic branches onto main.\n\nTell Copilot to implement 3 distinct tool calling functions for listing merged branches, running Git rebase, and executing remote deletion, requiring dry run confirmation flags before executing branch deletion instead. Tell Copilot to wrap each Git subprocess execution inside try-except blocks by capturing exit codes and standard error streams.\n\nWrite 8 pytest unit tests using subprocess mocking to verify that non-zero return codes trigger structured tool error responses across 16 branch scenarios."
+        },
+        {
+            # Sample 15: Cursor async event bus deadlock elimination
+            "raw_asr": "basically prompt cur sor two refact our asynchronous event dispatcher inside event bus dot py buy replacing threading locks with a sink i o queues our current worker pool deadlocks during application termination because worker threads wait indefinitely on condition variables while the event loop closes um instruct cur sor two implement a graceful worker pool shutdown buy draining in flight task queues within a five second grace period wait cancel pending queue tasks when timeout expires instead tell cur sor two manage consumer worker tasks using an a sink i o task group buy tracking active coroutines and aggregating unhandled exceptions um write seven pie test a sink i o unit tests simulating hung worker coroutines and assert that event loop termination completes cleanly across ten concurrent dispatchers",
+            "refined_text": "Prompt Cursor to refactor our asynchronous event dispatcher inside event_bus.py by replacing threading locks with asyncio queues. Our current worker pool deadlocks during application termination because worker threads wait indefinitely on condition variables while the event loop closes.\n\nInstruct Cursor to implement a graceful worker pool shutdown by draining in-flight task queues within a 5 second grace period, canceling pending queue tasks when timeout expires instead. Tell Cursor to manage consumer worker tasks using an asyncio task group by tracking active coroutines and aggregating unhandled exceptions.\n\nWrite 7 pytest-asyncio unit tests simulating hung worker coroutines, and assert that event loop termination completes cleanly across 10 concurrent dispatchers."
+        },
+        {
+            # Sample 16: Aider SQLAlchemy AST schema difference generator
+            "raw_asr": "um instruct aid er two implement an automated schema difference generator inside model migrator dot py buy comparing sqlalchemy model a s t trees against live postgres catalog tables our database evolution workflow requires programmatic detection of newly added model columns and index alterations without running manual alembic autogenerate commands basically tell aid er two parse declarative model classes buy inspecting table argument expressions and extracting column metadata definitions wait compare column nullability and default values instead of just column names tell aid er two generat executable sql migration statements buy emitting alter table add column statements four missing fields um write nine pie test test fixtures mocking catalog table reflection and verify that detected column alterations produce valid d d l strings across fourteen database models",
+            "refined_text": "Instruct Aider to implement an automated schema difference generator inside model_migrator.py by comparing SQLAlchemy model AST trees against live Postgres catalog tables. Our database evolution workflow requires programmatic detection of newly added model columns and index alterations without running manual Alembic autogenerate commands.\n\nTell Aider to parse declarative model classes by inspecting table argument expressions and extracting column metadata definitions, comparing column nullability and default values instead of just column names. Tell Aider to generate executable SQL migration statements by emitting alter table add column statements for missing fields.\n\nWrite 9 pytest test fixtures mocking catalog table reflection, and verify that detected column alterations produce valid DDL strings across 14 database models."
+        },
+        {
+            # Sample 17: Windsurf conversational semantic cache embeddings
+            "raw_asr": "basically tell wind surf two refact our conversational response cache inside semantic cache dot py buy integrating vector similarity lookups before invoking the foundation model api our chat backend currently executes costly model inference four repetitive user inquiries buy relying only on exact string hashing which misses semantically identical questions with slight phrasing variations um ask wind surf two compute sentence embeddings four incoming user queries buy passing text payloads two an in memory embedding encoder wait store embedding vectors in a local cosine index instead of exact hashes tell wind surf two return cached response answers whenever cosine similarity exceeds ninety percent wait ninety two percent threshold instead um write eight pie test tests asserting that paraphrased questions hit cache records across forty synthetic query pairs",
+            "refined_text": "Tell Windsurf to refactor our conversational response cache inside semantic_cache.py by integrating vector similarity lookups before invoking the foundation model API. Our chat backend currently executes costly model inference for repetitive user inquiries by relying only on exact string hashing, which misses semantically identical questions with slight phrasing variations.\n\nAsk Windsurf to compute sentence embeddings for incoming user queries by passing text payloads to an in-memory embedding encoder, storing embedding vectors in a local cosine index instead of exact hashes. Tell Windsurf to return cached response answers whenever cosine similarity exceeds 92% threshold instead.\n\nWrite 8 pytest tests asserting that paraphrased questions hit cache records across 40 synthetic query pairs."
+        },
+        {
+            # Sample 18: Copilot AST print to logger transformation
+            "raw_asr": "okay so tell co pilot two implement an a s t code transformation routine inside telemetry injector dot py buy detecting print function calls and replacing them with logger debug invocations our legacy service repository contains hundreds of debug print statements scattered throughout business logic functions which pollute standard output during automated test runs um ask co pilot two construct an a s t node transformer that visits call nodes checks if the function identifier equals print and substitutes a call node targeting logger dot debug wait preserve original print arguments as positional message parameters instead tell co pilot two format keyword arguments buy serializing extra context into dictionary literals um write six pie test unit tests verifying that nested print calls inside comprehension expressions transform correctly across eighteen source files",
+            "refined_text": "Tell Copilot to implement an AST code transformation routine inside telemetry_injector.py by detecting print function calls and replacing them with logger debug invocations. Our legacy service repository contains hundreds of debug print statements scattered throughout business logic functions, which pollute standard output during automated test runs.\n\nAsk Copilot to construct an AST node transformer that visits call nodes, checks if the function identifier equals print, and substitutes a call node targeting logger.debug, preserving original print arguments as positional message parameters instead. Tell Copilot to format keyword arguments by serializing extra context into dictionary literals.\n\nWrite 6 pytest unit tests verifying that nested print calls inside comprehension expressions transform correctly across 18 source files."
+        },
+        {
+            # Sample 19: Cursor prompt chain JSON repair loop
+            "raw_asr": "basically prompt cur sor two refact our agent extraction chain inside entity extractor dot py buy enforcing structured output validation against a pydantic schema our current extraction pipeline sends freeform prompts two the language model which occasionally outputs malformed json with trailing commas or unquoted keys breaking downstream deserializers um instruct cur sor two implement an automated repair loop that catches json decode error exceptions and constructs a targeted correction prompt with the parse error details wait limit retry attempts two three iterations before raising validation failure instead tell cur sor two extract typed attributes buy converting validated pydantic models into immutable frozen dataclasses um write ten pie test fixtures simulating truncated json responses and assert that the repair loop resolves schema errors within two retries across sixteen evaluation examples",
+            "refined_text": "Prompt Cursor to refactor our agent extraction chain inside entity_extractor.py by enforcing structured output validation against a Pydantic schema. Our current extraction pipeline sends freeform prompts to the language model, which occasionally outputs malformed JSON with trailing commas or unquoted keys, breaking downstream deserializers.\n\nInstruct Cursor to implement an automated repair loop that catches JSON decode error exceptions and constructs a targeted correction prompt with the parse error details, limiting retry attempts to 3 iterations before raising validation failure instead. Tell Cursor to extract typed attributes by converting validated Pydantic models into immutable frozen dataclasses.\n\nWrite 10 pytest fixtures simulating truncated JSON responses, and assert that the repair loop resolves schema errors within 2 retries across 16 evaluation examples."
+        },
+        {
+            # Sample 20: Aider sandboxed tool runner Docker execution
+            "raw_asr": "um instruct aid er two refact our tool execution runtime inside sandbox runner dot py buy isolating agent code invocations within ephemeral docker containers our existing tool runner executes generated python code directly on the host worker machine which risks environment corruption and lingering background processes when generated scripts hang um tell aid er two implement an asynchronous container runner using docker python sdk buy mounting read only source volumes and enforcing an execution timeout of ten seconds wait terminate containers with sigkill after fifteen seconds if graceful stop fails instead tell aid er two stream standard output and error logs buy capturing container log buffers into memory queues um right seven pie test a sink i o unit tests simulating infinite loop scripts and verify that container cleanup completes within two seconds across twelve execution runs",
+            "refined_text": "Instruct Aider to refactor our tool execution runtime inside sandbox_runner.py by isolating agent code invocations within ephemeral Docker containers. Our existing tool runner executes generated Python code directly on the host worker machine, which risks environment corruption and lingering background processes when generated scripts hang.\n\nTell Aider to implement an asynchronous container runner using Docker Python SDK by mounting read-only source volumes and enforcing an execution timeout of 10 seconds, terminating containers with SIGKILL after 15 seconds if graceful stop fails instead. Tell Aider to stream standard output and error logs by capturing container log buffers into memory queues.\n\nWrite 7 pytest-asyncio unit tests simulating infinite loop scripts, and verify that container cleanup completes within 2 seconds across 12 execution runs."
+        }
+    ]
+    return batch
+
+if __name__ == "__main__":
+    batch = build_batch_42()
+    print(f"Total samples: {len(batch)}")
+
+    # 1. Pair Validation
+    all_pairs_valid = True
+    for i, pair in enumerate(batch):
+        v, reason = validate_pair(pair)
+        words = len(pair["refined_text"].split())
+        raw_words = len(pair["raw_asr"].split())
+        ratio = words / max(1, raw_words)
+        print(f"Sample {i+1:02d}: words={words:3d}, raw_words={raw_words:3d}, ratio={ratio:.2f} -> Valid: {v} ({reason})")
+        if not v:
+            all_pairs_valid = False
+
+    # 2. Batch Validation
+    b_val, b_reason, tier_counts = validate_batch(batch, min_short=4, min_medium=6, min_long=10)
+    print(f"\nBatch validation: {b_val} ({b_reason})")
+    print(f"Tier counts: {tier_counts}")
+
+    # 3. Cleaner Validation
+    all_clean = True
+    for i, pair in enumerate(batch):
+        res, status = clean_sample(pair["raw_asr"], pair["refined_text"])
+        if status != "kept":
+            print(f"Cleaner dropped Sample {i+1:02d}: {status}")
+            all_clean = False
+        else:
+            print(f"Sample {i+1:02d} cleaner status: {status}")
+
+    # 4. Leakage Check against sft_eval.json
+    with open("sft_eval.json", "r", encoding="utf-8") as f:
+        eval_data = json.load(f)
+
+    eval_raws = {item.get("raw_asr", item.get("input", "")).strip().lower() for item in eval_data}
+    eval_refs = {item.get("refined_text", item.get("output", "")).strip().lower() for item in eval_data}
+
+    leakage_found = False
+    for i, pair in enumerate(batch):
+        r = pair["raw_asr"].strip().lower()
+        rf = pair["refined_text"].strip().lower()
+        if r in eval_raws:
+            print(f"LEAKAGE in raw_asr: Sample {i+1}")
+            leakage_found = True
+        if rf in eval_refs:
+            print(f"LEAKAGE in refined_text: Sample {i+1}")
+            leakage_found = True
+
+    print(f"\nLeakage check: {'FAILED' if leakage_found else 'PASSED (0 leaks)'}")
+
+    # Save to scratch/subagent_batch_42.json if all checks pass
+    if all_pairs_valid and b_val and all_clean and not leakage_found:
+        output_file = "scratch/subagent_batch_42.json"
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(batch, f, ensure_ascii=False, indent=2)
+        print(f"\nSuccessfully written verified batch to {output_file}")
+    else:
+        print("\nFix required before writing output.")
