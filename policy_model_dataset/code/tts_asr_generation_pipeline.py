@@ -1,3 +1,58 @@
+"""
+=============================================================================
+DATASET GENERATION PIPELINE — ASR Post-Refinement Training Data
+=============================================================================
+
+NOISE SETUP (run once before first use)
+-----------------------------------------
+Source : MUSAN corpus — noise/free-sound subset
+License: CC BY 4.0
+Page   : https://openslr.org/17/
+
+Download only the noise subset (~30 files) via HuggingFace:
+
+    from huggingface_hub import list_repo_files, hf_hub_download
+    import os
+
+    repo_id   = "FluidInference/musan"
+    repo_type = "dataset"
+
+    noise_files = [
+        f for f in list_repo_files(repo_id, repo_type=repo_type)
+        if "noise/free-sound" in f and f.endswith(".wav")
+    ]
+
+    os.makedirs("musan_noise", exist_ok=True)
+    for f in noise_files[:30]:
+        hf_hub_download(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            filename=f,
+            local_dir="musan_noise"
+        )
+
+Noise path used in pipeline:
+    ./musan_noise/noise/free-sound/
+
+=============================================================================
+HYPERPARAMETERS
+=============================================================================
+
+    MIN_SNR_DB          = 8       # AddBackgroundNoise min SNR
+    MAX_SNR_DB          = 13      # AddBackgroundNoise max SNR
+    MIN_WER             = 0.08    # filter: minimum word error rate
+    MAX_WER             = 0.55    # filter: maximum word error rate
+    MIN_CER             = 0.03    # filter: minimum character error rate
+    MAX_CER             = 0.25    # filter: maximum character error rate
+    MIN_WORDS           = 6       # filter: skip sentences shorter than this
+    TTS_SPEED_MIN       = 1.25    # random speed lower bound
+    TTS_SPEED_MAX       = 1.35    # random speed upper bound
+    WHISPER_BEAM_SIZE   = 1
+    WHISPER_TEMPERATURE = 0.0
+
+=============================================================================
+"""
+
 import soundfile as sf
 import torchaudio
 
@@ -236,7 +291,9 @@ def calculate_metrics(targets, predictions):
 
 def generation_pipeline(batch_size):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    gpu_augmenter = get_gpu_augmenter(sample_rate=TARGET_SAMPLE_RATE, device=str(device))
+    gpu_augmenter = get_gpu_augmenter(
+        sample_rate=TARGET_SAMPLE_RATE, device=str(device)
+    )
 
     tts_model, asr_model = load_models()
     dataset = load_dataset("./datasets/policy_model_dataset/tts_input_dataset.json")
@@ -261,7 +318,9 @@ def generation_pipeline(batch_size):
                 )
             with torch.no_grad():
                 noise_voice = noise_addition_gpu(
-                    audio_tensor, augmenter=gpu_augmenter, sample_rate=TARGET_SAMPLE_RATE
+                    audio_tensor,
+                    augmenter=gpu_augmenter,
+                    sample_rate=TARGET_SAMPLE_RATE,
                 )
             # Disable Whisper's auto-correction context and greedy language modeling
             segments, _ = asr_model.transcribe(
