@@ -52,6 +52,25 @@ import numpy as np
 import json
 
 
+# ── SNR (real background noise mixing) ──
+MIN_SNR_DB = 8.0
+MAX_SNR_DB = 13.0
+
+# ── Quality Filters ──
+MIN_WER = 0.08
+MAX_WER = 0.40
+MIN_CER = 0.03
+MAX_CER = 0.25
+MIN_WORDS = 6
+
+# ── Whisper Inference ──
+BEAM_SIZE = 1
+TEMPERATURE = 0.0
+CONDITION_ON_PREVIOUS_TEXT = False
+
+TARGET_SAMPLE_RATE = 16000
+
+
 def load_models(tts_model_name="kokoro-v1.0.onnx", asr_model_name="tiny.en"):
     tts_model = Kokoro(tts_model_name, "voices-v1.0.bin")
 
@@ -148,7 +167,7 @@ class RandomTimeMask(BaseWaveformTransform):
 
 
 # Instantiate the GPU pipeline once on your device
-def get_gpu_augmenter(sample_rate: int = 16000, device: str = "cuda"):
+def get_gpu_augmenter(sample_rate: int = TARGET_SAMPLE_RATE, device: str = "cuda"):
     augmenter = Compose(
         transforms=[
             # 1. Packet/VoIP chunk dropouts
@@ -160,10 +179,10 @@ def get_gpu_augmenter(sample_rate: int = 16000, device: str = "cuda"):
                 output_type="tensor",
             ),
             AddBackgroundNoise(
-                # auto suffling i think
+                # auto shuffling across noise folder
                 background_paths=f"/kaggle/working/musan_noise/noise/free-sound/",
-                min_snr_in_db=10,
-                max_snr_in_db=10,
+                min_snr_in_db=MIN_SNR_DB,
+                max_snr_in_db=MAX_SNR_DB,
                 p=1.0,
                 output_type="tensor",
             ),
@@ -217,14 +236,17 @@ def calculate_metrics(targets, predictions):
 
 def generation_pipeline(batch_size):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    gpu_augmenter = get_gpu_augmenter(sample_rate=16000, device=str(device))
+    gpu_augmenter = get_gpu_augmenter(sample_rate=TARGET_SAMPLE_RATE, device=str(device))
 
     tts_model, asr_model = load_models()
     dataset = load_dataset("./datasets/policy_model_dataset/tts_input_dataset.json")
     noise_dataset = []
 
     for i in range(0, len(dataset), batch_size):
-        batch_text = dataset[i : i + batch_size]
+        raw_batch = dataset[i : i + batch_size]
+        batch_text = [text for text in raw_batch if len(text.split()) >= MIN_WORDS]
+        if not batch_text:
+            continue
 
         noise_transcribe = []
         for text in batch_text:
@@ -233,20 +255,20 @@ def generation_pipeline(batch_size):
             voice = np.random.choice(["af_sarah", "af_bella", "am_adam", "bf_emma"])
             samples, sample_rate = tts_model.create(text, voice=voice, speed=rand_speed)
             audio_tensor = torch.from_numpy(np.array(samples)).float().to(device)
-            if sample_rate != 16000:
+            if sample_rate != TARGET_SAMPLE_RATE:
                 audio_tensor = F_audio.resample(
-                    audio_tensor, orig_freq=sample_rate, new_freq=16000
+                    audio_tensor, orig_freq=sample_rate, new_freq=TARGET_SAMPLE_RATE
                 )
             with torch.no_grad():
                 noise_voice = noise_addition_gpu(
-                    audio_tensor, augmenter=gpu_augmenter, sample_rate=16000
+                    audio_tensor, augmenter=gpu_augmenter, sample_rate=TARGET_SAMPLE_RATE
                 )
             # Disable Whisper's auto-correction context and greedy language modeling
             segments, _ = asr_model.transcribe(
                 noise_voice.squeeze().cpu().numpy(),
-                beam_size=1,
-                condition_on_previous_text=False,
-                temperature=0.0,
+                beam_size=BEAM_SIZE,
+                condition_on_previous_text=CONDITION_ON_PREVIOUS_TEXT,
+                temperature=TEMPERATURE,
             )
             noise_raw_text = " ".join([seg.text.strip() for seg in segments])
             noise_transcribe.append(noise_raw_text)
@@ -257,8 +279,7 @@ def generation_pipeline(batch_size):
         for raw_asr, refined_text, (wer, cer) in zip(
             noise_transcribe, batch_text, metrics
         ):
-            # Widen bounds: keep realistic subtle errors (10-30%) up to heavy errors (60%)
-            if 0.03 <= cer <= 0.25 and 0.08 <= wer <= 0.55:
+            if MIN_CER <= cer <= MAX_CER and MIN_WER <= wer <= MAX_WER:
                 if debug_count < 3:
                     print(f"\n\nrefined text : {refined_text}\n")
                     print(f"raw_asr : {raw_asr}\n")
