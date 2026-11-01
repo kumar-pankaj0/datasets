@@ -2,7 +2,7 @@ from kokoro_onnx import Kokoro
 from torch_audiomentations import (
     Compose,
     AddColoredNoise,
-    ApplyBackgroundNoise,
+    AddBackgroundNoise,
     BandPassFilter,
 )
 from torch_audiomentations.core.transforms_interface import BaseWaveformTransform
@@ -15,8 +15,8 @@ import numpy as np
 import json
 
 
-def load_models(tts_model_name="kokoro-v0_19.onnx", asr_model_name="base"):
-    tts_model = Kokoro(tts_model_name, "voices.json")
+def load_models(tts_model_name="kokoro-v1.0.onnx", asr_model_name="tiny.en"):
+    tts_model = Kokoro(tts_model_name, "voices-v1.0.bin")
 
     compute_type = "float16" if torch.cuda.is_available() else "int8"
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -29,7 +29,7 @@ def load_dataset(path="./datasets/policy_model_dataset/tts_dataset.json"):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    return [item["refined_text"] for item in data]
+    return [item for item in data['refined_text']]
 
 
 class RandomTimeMask(BaseWaveformTransform):
@@ -59,11 +59,14 @@ class RandomTimeMask(BaseWaveformTransform):
 
     def randomize_parameters(
         self,
-        selected_samples: torch.Tensor,
+        samples: torch.Tensor,
         sample_rate: int = None,
+        targets=None,
+        target_rate=None,
+        **kwargs
     ):
-        batch_size, _, total_samples = selected_samples.shape
-        device = selected_samples.device
+        batch_size, _, total_samples = samples.shape
+        device = samples.device
 
         # Generate random lengths and start indices for every selected item in the batch
         ratios = torch.empty(batch_size, device=device).uniform_(
@@ -85,10 +88,13 @@ class RandomTimeMask(BaseWaveformTransform):
 
     def apply_transform(
         self,
-        selected_samples: torch.Tensor,
+        samples: torch.Tensor,
         sample_rate: int = None,
+        targets=None,
+        target_rate=None,
+        **kwargs
     ) -> ObjectDict:
-        out = selected_samples.clone()
+        out = samples.clone()
         mask_lens = self.transform_parameters["mask_lens"]
         start_indices = self.transform_parameters["start_indices"]
 
@@ -96,7 +102,12 @@ class RandomTimeMask(BaseWaveformTransform):
             if mask_len > 0:
                 out[idx, :, start_idx : start_idx + mask_len] = 0.0
 
-        return ObjectDict(samples=out, sample_rate=sample_rate)
+        return ObjectDict(
+            samples=out,
+            sample_rate=sample_rate,
+            targets=targets,
+            target_rate=target_rate,
+        )
 
 
 # Instantiate the GPU pipeline once on your device
@@ -112,7 +123,7 @@ def get_gpu_augmenter(sample_rate: int = 16000, device: str = "cuda"):
                 output_type="tensor",
             ),
             # 2. Add real acoustic background noise from folder (optional)
-            # ApplyBackgroundNoise(
+            # AddBackgroundNoise(
             #     background_paths="path/to/noise_wavs",
             #     min_snr_in_db=3.0,
             #     max_snr_in_db=15.0,
@@ -151,7 +162,7 @@ def noise_addition_gpu(
         audio_batch: Tensor of shape (B, T) or (B, 1, T), float32, on CUDA.
         augmenter: Initialized torch-audiomentations Compose module on CUDA.
     Returns:
-        Tensor of shape (B, T) clipped to [-1.0, 1.0].
+        Tensor of shape (B, 1, T) clipped to [-1.0, 1.0].
     """
     if audio_batch.ndim == 1:
         audio_batch = audio_batch.unsqueeze(0).unsqueeze(0)
@@ -176,7 +187,7 @@ def generation_pipeline(batch_size):
     gpu_augmenter = get_gpu_augmenter(sample_rate=16000, device=str(device))
 
     tts_model, asr_model = load_models()
-    dataset = load_dataset("./datasets/policy_model_dataset/tts_dataset.json")
+    dataset = load_dataset("./datasets/policy_model_dataset/tts_input_dataset.json")
     noise_dataset = []
 
     for i in range(0, len(dataset), batch_size):
@@ -184,27 +195,44 @@ def generation_pipeline(batch_size):
 
         noise_transcribe = []
         for text in batch_text:
-            samples, sample_rate = tts_model.create(text, voice="af_sarah", speed=1.0)
+            # Randomize speech rate to compress phonemes and trigger dropped syllables
+            rand_speed = float(np.random.uniform(1.15, 1.25))
+            voice = np.random.choice(["af_sarah", "af_bella", "am_adam", "bf_emma"])
+            samples, sample_rate = tts_model.create(text, voice=voice, speed=rand_speed)
             audio_tensor = torch.from_numpy(np.array(samples)).float().to(device)
             with torch.no_grad():
                 noise_voice = noise_addition_gpu(
                     audio_tensor, augmenter=gpu_augmenter, sample_rate=16000
                 )
-            segments, _ = asr_model.transcribe(noise_voice.squeeze().cpu().numpy(), beam_size=1)
+            # Disable Whisper's auto-correction context and greedy language modeling
+            segments, _ = asr_model.transcribe(
+                noise_voice.squeeze().cpu().numpy(),
+                beam_size=1,
+                condition_on_previous_text=False,
+                temperature=0.0,
+            )
             noise_raw_text = " ".join([seg.text.strip() for seg in segments])
-
             noise_transcribe.append(noise_raw_text)
 
         metrics = calculate_metrics(batch_text, noise_transcribe)
 
+        debug_count = 0
         for raw_asr, refined_text, score in zip(noise_transcribe, batch_text, metrics):
-            if 0.3 < score < 0.7:
-                noise_dataset.append(
-                    {
-                        "raw_asr": raw_asr,
-                        "refined_text": refined_text,
-                    }
-                )
+            # Widen bounds: keep realistic subtle errors (10-30%) up to heavy errors (60%)
+            if debug_count <= 3:
+                if 0.1 < score < 0.9:
+                    print(f"\n\nrefined text : {refined_text}\n")
+                    print(f"raw_asr : {raw_asr}\n\n")
+                    noise_dataset.append(
+                        {
+                            "raw_asr": raw_asr,
+                            "refined_text": refined_text,
+                        }
+                    )
+                debug_count += 1
+            else:
+                break
+
     with open("sft_train.json", "w") as f:
         json.dump(noise_dataset, f, indent=2)
 
