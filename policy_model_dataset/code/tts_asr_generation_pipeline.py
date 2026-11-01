@@ -50,6 +50,20 @@ HYPERPARAMETERS
     WHISPER_BEAM_SIZE   = 1
     WHISPER_TEMPERATURE = 0.0
 
+Execution Examples
+
+    # Run with default parameters (batch_size=16)
+    python code/tts_asr_generation_pipeline.py
+
+    # Custom batch size and output location
+    python code/tts_asr_generation_pipeline.py
+    --batch_size 32 --output_path ./custom_sft.json
+
+    # Custom Whisper model and noise directory
+    python code/tts_asr_generation_pipeline.py
+    --asr_model base.en --noise_dir
+    ./musan_noise/noise/free-sound/
+
 =============================================================================
 """
 
@@ -105,6 +119,7 @@ import torch
 import jiwer
 import numpy as np
 import json
+import argparse
 
 
 # ── SNR (real background noise mixing) ──
@@ -222,7 +237,11 @@ class RandomTimeMask(BaseWaveformTransform):
 
 
 # Instantiate the GPU pipeline once on your device
-def get_gpu_augmenter(sample_rate: int = TARGET_SAMPLE_RATE, device: str = "cuda"):
+def get_gpu_augmenter(
+    sample_rate: int = TARGET_SAMPLE_RATE,
+    noise_dir: str = "/kaggle/working/musan_noise/noise/free-sound/",
+    device: str = "cuda",
+):
     augmenter = Compose(
         transforms=[
             # 1. Packet/VoIP chunk dropouts
@@ -234,8 +253,7 @@ def get_gpu_augmenter(sample_rate: int = TARGET_SAMPLE_RATE, device: str = "cuda
                 output_type="tensor",
             ),
             AddBackgroundNoise(
-                # auto shuffling across noise folder
-                background_paths=f"/kaggle/working/musan_noise/noise/free-sound/",
+                background_paths=noise_dir,
                 min_snr_in_db=MIN_SNR_DB,
                 max_snr_in_db=MAX_SNR_DB,
                 p=1.0,
@@ -289,14 +307,24 @@ def calculate_metrics(targets, predictions):
     return result
 
 
-def generation_pipeline(batch_size):
+def generation_pipeline(
+    batch_size: int = 16,
+    dataset_path: str = "./datasets/policy_model_dataset/tts_input_dataset.json",
+    output_path: str = "sft_train.json",
+    noise_dir: str = "/kaggle/working/musan_noise/noise/free-sound/",
+    asr_model_name: str = "tiny.en",
+    tts_model_name: str = "kokoro-v1.0.onnx",
+    debug_samples: int = 3,
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     gpu_augmenter = get_gpu_augmenter(
-        sample_rate=TARGET_SAMPLE_RATE, device=str(device)
+        sample_rate=TARGET_SAMPLE_RATE, noise_dir=noise_dir, device=str(device)
     )
 
-    tts_model, asr_model = load_models()
-    dataset = load_dataset("./datasets/policy_model_dataset/tts_input_dataset.json")
+    tts_model, asr_model = load_models(
+        tts_model_name=tts_model_name, asr_model_name=asr_model_name
+    )
+    dataset = load_dataset(dataset_path)
     noise_dataset = []
 
     for i in range(0, len(dataset), batch_size):
@@ -339,7 +367,7 @@ def generation_pipeline(batch_size):
             noise_transcribe, batch_text, metrics
         ):
             if MIN_CER <= cer <= MAX_CER and MIN_WER <= wer <= MAX_WER:
-                if debug_count < 3:
+                if debug_count < debug_samples:
                     print(f"\n\nrefined text : {refined_text}\n")
                     print(f"raw_asr : {raw_asr}\n")
                     print(f"WER: {wer:.2%}   CER: {cer:.2%}\n")
@@ -351,7 +379,55 @@ def generation_pipeline(batch_size):
                     }
                 )
 
-    with open("sft_train.json", "w") as f:
+    with open(output_path, "w") as f:
         json.dump(noise_dataset, f, indent=2)
 
     return noise_dataset
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="TTS-ASR Noise Generation Pipeline")
+    parser.add_argument(
+        "--batch_size", type=int, default=16, help="Batch size for processing"
+    )
+    parser.add_argument(
+        "--dataset_path",
+        type=str,
+        default="./datasets/policy_model_dataset/tts_input_dataset.json",
+        help="Path to input text dataset JSON",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default="sft_train.json",
+        help="Output JSON file destination",
+    )
+    parser.add_argument(
+        "--noise_dir",
+        type=str,
+        default="/kaggle/working/musan_noise/noise/free-sound/",
+        help="Directory with background noise audio files",
+    )
+    parser.add_argument(
+        "--asr_model", type=str, default="tiny.en", help="Whisper model name"
+    )
+    parser.add_argument(
+        "--tts_model", type=str, default="kokoro-v1.0.onnx", help="Kokoro ONNX model"
+    )
+    parser.add_argument(
+        "--debug_samples",
+        type=int,
+        default=3,
+        help="Number of preview outputs to print",
+    )
+    args = parser.parse_args()
+
+    generation_pipeline(
+        batch_size=args.batch_size,
+        dataset_path=args.dataset_path,
+        output_path=args.output_path,
+        noise_dir=args.noise_dir,
+        asr_model_name=args.asr_model,
+        tts_model_name=args.tts_model,
+        debug_samples=args.debug_samples,
+    )
