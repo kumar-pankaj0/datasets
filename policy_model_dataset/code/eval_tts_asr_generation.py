@@ -96,7 +96,7 @@ test_sentances = [
 ]
 for idx, test_sentence in enumerate(test_sentances):
     background_noise_add = AddBackgroundNoise(
-        background_noise_add=f"/kaggle/working/musan_noise/noise/free-sound/noise-free-sound-000{idx}.wav",
+        background_paths=f"/kaggle/working/musan_noise/noise/free-sound/noise-free-sound-000{idx}.wav",
         min_snr_in_db=0.7,
         max_snr_in_db=1,
         p=1.0,
