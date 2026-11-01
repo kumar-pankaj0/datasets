@@ -71,6 +71,37 @@ def save_wav(filepath, audio_np, sample_rate=16000):
         wf.writeframes(audio_int16.tobytes())
 
 
+def add_synthetic_layers(x: torch.Tensor, sr: int = 16000) -> torch.Tensor:
+    """Stack light synthetic degradation ON TOP of real noise.
+    Adds: small room reverb + mic muffle (low-pass) + gentle preamp hiss.
+    """
+    T = x.shape[-1]
+
+    # 1. Small room reverb
+    rt60 = 0.18
+    rir_len = int(rt60 * sr)
+    t = torch.linspace(0, rt60, rir_len, device=x.device)
+    rir = torch.randn(rir_len, device=x.device) * torch.exp(-6.2 * t / rt60)
+    rir[0] = 0.33
+    rir = rir / torch.norm(rir)
+    n_fft = 2 ** int(np.ceil(np.log2(T + rir_len - 1)))
+    x = torch.fft.irfft(
+        torch.fft.rfft(x, n=n_fft) * torch.fft.rfft(rir, n=n_fft), n=n_fft
+    )[:T]
+
+    # 2. Mic muffle — low-pass at 2200 Hz
+    x = F_audio.lowpass_biquad(x, sample_rate=sr, cutoff_freq=2200.0)
+
+    # 3. Gentle preamp hiss (SNR ~70 dB — barely audible)
+    hiss = torch.randn_like(x)
+    sig_power   = x.pow(2).mean().clamp(min=1e-8)
+    hiss_power  = hiss.pow(2).mean().clamp(min=1e-8)
+    scale = torch.sqrt(sig_power / (hiss_power * (10 ** (70.0 / 10.0))))
+    x = x + hiss * scale
+
+    return x / x.abs().max().clamp(min=1e-6) * 0.9
+
+
 # --- TEST & LISTEN ---
 test_sentances = [
     # Short (1 sentence)
@@ -125,6 +156,11 @@ for idx, test_sentence in enumerate(test_sentances):
         )  # (1, 1, T)
         realistic_noisy_tensor = noisy_3d.squeeze(0).squeeze(0)  # (T,)
 
+        # Stack synthetic layers on top of real noise
+        realistic_noisy_tensor = add_synthetic_layers(
+            realistic_noisy_tensor, sr=target_sample_rate
+        )
+
     clean_np = audio_tensor.cpu().numpy()
     noisy_np = realistic_noisy_tensor.cpu().numpy()
 
@@ -140,5 +176,5 @@ for idx, test_sentence in enumerate(test_sentances):
     print(f"=== WHISPER TRANSCRIBED ===\n{whisper_out}\n")
     print(f"WER: {jiwer.wer(test_sentence, whisper_out):.2%}\n")
 
-    print("▶️ Listen to Baseline + Realistic Noise added")
+    print("▶️ Listen to Real Noise + Synthetic Layers")
     ipd.display(ipd.Audio(noisy_np, rate=target_sample_rate))
