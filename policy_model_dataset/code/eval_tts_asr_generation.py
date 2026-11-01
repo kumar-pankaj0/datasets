@@ -1,3 +1,29 @@
+import soundfile as sf
+import torchaudio
+
+# torchaudio >= 2.9 removed torchaudio.info and AudioMetaData
+# patch them back via soundfile BEFORE torch_audiomentations is imported
+if not hasattr(torchaudio, "AudioMetaData"):
+    class AudioMetaData:
+        def __init__(self, sample_rate, num_frames, num_channels,
+                     bits_per_sample=0, encoding="PCM_S"):
+            self.sample_rate     = sample_rate
+            self.num_frames      = num_frames
+            self.num_channels    = num_channels
+            self.bits_per_sample = bits_per_sample
+            self.encoding        = encoding
+    torchaudio.AudioMetaData = AudioMetaData
+
+if not hasattr(torchaudio, "info"):
+    def _info(path, *args, **kwargs):
+        i = sf.info(str(path))
+        return torchaudio.AudioMetaData(
+            sample_rate=i.samplerate,
+            num_frames=i.frames,
+            num_channels=i.channels,
+        )
+    torchaudio.info = _info
+
 import wave
 import IPython.display as ipd
 import numpy as np
