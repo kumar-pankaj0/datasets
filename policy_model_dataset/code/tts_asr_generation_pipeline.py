@@ -107,9 +107,7 @@ import torchaudio.functional as F_audio
 from kokoro_onnx import Kokoro
 from torch_audiomentations import (
     Compose,
-    AddColoredNoise,
     AddBackgroundNoise,
-    BandPassFilter,
 )
 from torch_audiomentations.core.transforms_interface import BaseWaveformTransform
 from torch_audiomentations.utils.object_dict import ObjectDict
@@ -378,6 +376,8 @@ def generation_pipeline(
                         "refined_text": refined_text,
                     }
                 )
+            else:
+                print(f"WER: {wer:.2%}   CER: {cer:.2%}\n")
 
     with open(output_path, "w") as f:
         json.dump(noise_dataset, f, indent=2)
