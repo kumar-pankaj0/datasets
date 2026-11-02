@@ -119,6 +119,11 @@ import numpy as np
 import json
 import argparse
 
+try:
+    from datasets import load_dataset as hf_load_dataset
+except ImportError:
+    hf_load_dataset = None
+
 
 # ── SNR (real background noise mixing) ──
 MIN_SNR_DB = 8.0
@@ -149,11 +154,21 @@ def load_models(tts_model_name="kokoro-v1.0.onnx", asr_model_name="tiny.en"):
     return tts_model, asr_model
 
 
-def load_dataset(path="./datasets/policy_model_dataset/tts_dataset.json"):
+def load_ground_truth_dataset(path: str = "./combined_dataset.json"):
+    if hf_load_dataset is not None:
+        try:
+            ds = hf_load_dataset("json", data_files=path, split="train")
+            return ds["refined_text"]
+        except Exception:
+            pass
+    with open(path, "r", encoding="utf-8") as f:
+        return [json.loads(line)["refined_text"] for line in f if line.strip()]
+
+
+def load_tts_dataset(path: str = "./tts_input_dataset.json"):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-
-    return [item for item in data["refined_text"]]
+    return data["refined_text"]
 
 
 class RandomTimeMask(BaseWaveformTransform):
@@ -307,7 +322,8 @@ def calculate_metrics(targets, predictions):
 
 def generation_pipeline(
     batch_size: int = 16,
-    dataset_path: str = "./datasets/policy_model_dataset/tts_input_dataset.json",
+    dataset_path: str = "./tts_input_dataset.json",
+    combined_path: str = "./combined_dataset.json",
     output_path: str = "sft_train.json",
     noise_dir: str = "/kaggle/working/musan_noise/noise/free-sound/",
     asr_model_name: str = "tiny.en",
@@ -322,18 +338,30 @@ def generation_pipeline(
     tts_model, asr_model = load_models(
         tts_model_name=tts_model_name, asr_model_name=asr_model_name
     )
-    dataset = load_dataset(dataset_path)
+    tts_texts = load_tts_dataset(dataset_path)
+    ground_truth_texts = load_ground_truth_dataset(combined_path)
+
+    assert len(tts_texts) == len(ground_truth_texts), (
+        f"Length mismatch: {len(tts_texts)} TTS items vs {len(ground_truth_texts)} ground truth records"
+    )
+
     noise_dataset = []
 
-    for i in range(0, len(dataset), batch_size):
+    for i in range(0, len(tts_texts), batch_size):
         print(f" batch_size {i} is started =======================")
-        raw_batch = dataset[i : i + batch_size]
-        batch_text = [text for text in raw_batch if len(text.split()) >= MIN_WORDS]
-        if not batch_text:
+        batch_indices = [
+            idx
+            for idx in range(i, min(i + batch_size, len(tts_texts)))
+            if len(tts_texts[idx].split()) >= MIN_WORDS
+        ]
+        if not batch_indices:
             continue
 
+        batch_tts_text = [tts_texts[idx] for idx in batch_indices]
+        batch_ground_truth = [ground_truth_texts[idx] for idx in batch_indices]
+
         noise_transcribe = []
-        for text in batch_text:
+        for text in batch_tts_text:
             # Randomize speech rate to compress phonemes and trigger dropped syllables
             rand_speed = float(np.random.uniform(1.25, 1.35))
             voice = np.random.choice(["af_sarah", "af_bella", "am_adam", "bf_emma"])
@@ -359,15 +387,16 @@ def generation_pipeline(
             noise_raw_text = " ".join([seg.text.strip() for seg in segments])
             noise_transcribe.append(noise_raw_text)
 
-        metrics = calculate_metrics(batch_text, noise_transcribe)
+        metrics = calculate_metrics(batch_tts_text, noise_transcribe)
 
         debug_count = 0
-        for raw_asr, refined_text, (wer, cer) in zip(
-            noise_transcribe, batch_text, metrics
+        for raw_asr, refined_text, tts_text, (wer, cer) in zip(
+            noise_transcribe, batch_ground_truth, batch_tts_text, metrics
         ):
             if MIN_CER <= cer <= MAX_CER and MIN_WER <= wer <= MAX_WER:
                 if debug_count < debug_samples:
-                    print(f"\n\nrefined text : {refined_text}\n")
+                    print(f"\n\ntts text : {tts_text}\n")
+                    print(f"ground truth refined text : {refined_text}\n")
                     print(f"raw_asr : {raw_asr}\n")
                     print(f"WER: {wer:.2%}   CER: {cer:.2%}\n")
                     debug_count += 1
@@ -394,8 +423,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset_path",
         type=str,
-        default="./datasets/policy_model_dataset/tts_input_dataset.json",
-        help="Path to input text dataset JSON",
+        default="./tts_input_dataset.json",
+        help="Path to input text dataset JSON (cleaned for TTS)",
+    )
+    parser.add_argument(
+        "--combined_path",
+        type=str,
+        default="./combined_dataset.json",
+        help="Path to combined dataset JSON (ground-truth formatted)",
     )
     parser.add_argument(
         "--output_path",
@@ -426,6 +461,7 @@ if __name__ == "__main__":
     generation_pipeline(
         batch_size=args.batch_size,
         dataset_path=args.dataset_path,
+        combined_path=args.combined_path,
         output_path=args.output_path,
         noise_dir=args.noise_dir,
         asr_model_name=args.asr_model,
