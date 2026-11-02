@@ -112,6 +112,7 @@ from torch_audiomentations import (
 from torch_audiomentations.core.transforms_interface import BaseWaveformTransform
 from torch_audiomentations.utils.object_dict import ObjectDict
 
+from nltk.translate.chrf_score import sentence_chrf
 from faster_whisper import WhisperModel
 import torch
 import jiwer
@@ -390,13 +391,17 @@ def generation_pipeline(
             noise_transcribe.append(noise_raw_text)
 
         metrics = calculate_metrics(batch_tts_text, noise_transcribe)
-
         debug_count = 0
         for raw_asr, refined_text, tts_text, (wer, cer) in zip(
             noise_transcribe, batch_ground_truth, batch_tts_text, metrics
         ):
-            if MIN_CER <= cer <= MAX_CER and MIN_WER <= wer <= MAX_WER:
-                print(f"[ACCEPTED] WER: {wer:.2%}   CER: {cer:.2%}\n")
+            chrf = sentence_chrf(tts_text, raw_asr)
+            if (
+                MIN_CER <= cer <= MAX_CER
+                and MIN_WER <= wer <= MAX_WER
+                and chrf > 0.03
+            ):
+                print(f"[ACCEPTED] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}\n")
                 if debug_count < debug_samples:
                     print(f"\n\ntts text : {tts_text}\n")
                     print(f"ground truth refined text : {refined_text}\n")
@@ -409,7 +414,7 @@ def generation_pipeline(
                     }
                 )
             else:
-                print(f"[DISCARD] WER: {wer:.2%}   CER: {cer:.2%}\n")
+                print(f"[DISCARD] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}\n")
                 discarded_dataset.append(
                     {
                         "raw_asr": raw_asr,
@@ -417,6 +422,7 @@ def generation_pipeline(
                         "tts_text": tts_text,
                         "wer": round(wer, 4),
                         "cer": round(cer, 4),
+                        "chrf": round(chrf, 4),
                     }
                 )
 
