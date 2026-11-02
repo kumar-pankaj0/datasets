@@ -119,6 +119,8 @@ import jiwer
 import numpy as np
 import json
 import argparse
+import os
+from pathlib import Path
 
 try:
     from datasets import load_dataset as hf_load_dataset
@@ -155,7 +157,19 @@ def load_models(tts_model_name="kokoro-v1.0.onnx", asr_model_name="tiny.en"):
     return tts_model, asr_model
 
 
-def load_ground_truth_dataset(path: str = "./combined_dataset.json"):
+def resolve_path(path: str) -> str:
+    if os.path.exists(path):
+        return path
+    candidate = Path(__file__).resolve().parent.parent / os.path.basename(path)
+    if candidate.exists():
+        return str(candidate)
+    return path
+
+
+def load_ground_truth_dataset(
+    path: str = "./datasets/policy_model_dataset/combined_dataset.json",
+):
+    path = resolve_path(path)
     if hf_load_dataset is not None:
         try:
             ds = hf_load_dataset("json", data_files=path, split="train")
@@ -166,7 +180,10 @@ def load_ground_truth_dataset(path: str = "./combined_dataset.json"):
         return [json.loads(line)["refined_text"] for line in f if line.strip()]
 
 
-def load_tts_dataset(path: str = "./tts_input_dataset.json"):
+def load_tts_dataset(
+    path: str = "./datasets/policy_model_dataset/tts_input_dataset.json",
+):
+    path = resolve_path(path)
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return data["refined_text"]
@@ -323,8 +340,8 @@ def calculate_metrics(targets, predictions):
 
 def generation_pipeline(
     batch_size: int = 16,
-    dataset_path: str = "./tts_input_dataset.json",
-    combined_path: str = "./combined_dataset.json",
+    dataset_path: str = "./datasets/policy_model_dataset/tts_input_dataset.json",
+    combined_path: str = "./datasets/policy_model_dataset/combined_dataset.json",
     output_path: str = "sft_train.json",
     discarded_path: str = "discarded_samples.json",
     noise_dir: str = "/kaggle/working/musan_noise/noise/free-sound/",
@@ -443,13 +460,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset_path",
         type=str,
-        default="./tts_input_dataset.json",
+        default="./datasets/policy_model_dataset/tts_input_dataset.json",
         help="Path to input text dataset JSON (cleaned for TTS)",
     )
     parser.add_argument(
         "--combined_path",
         type=str,
-        default="./combined_dataset.json",
+        default="./datasets/policy_model_dataset/combined_dataset.json",
         help="Path to combined dataset JSON (ground-truth formatted)",
     )
     parser.add_argument(
