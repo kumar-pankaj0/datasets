@@ -394,11 +394,11 @@ def generation_pipeline(
             noise_transcribe, batch_ground_truth, batch_tts_text, metrics
         ):
             if MIN_CER <= cer <= MAX_CER and MIN_WER <= wer <= MAX_WER:
+                print(f"WER: {wer:.2%}   CER: {cer:.2%}\n")
                 if debug_count < debug_samples:
                     print(f"\n\ntts text : {tts_text}\n")
                     print(f"ground truth refined text : {refined_text}\n")
                     print(f"raw_asr : {raw_asr}\n")
-                    print(f"WER: {wer:.2%}   CER: {cer:.2%}\n")
                     debug_count += 1
                 noise_dataset.append(
                     {
@@ -406,8 +406,6 @@ def generation_pipeline(
                         "refined_text": refined_text,
                     }
                 )
-            else:
-                print(f"WER: {wer:.2%}   CER: {cer:.2%}\n")
 
     with open(output_path, "w") as f:
         json.dump(noise_dataset, f, indent=2)
