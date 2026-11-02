@@ -326,6 +326,7 @@ def generation_pipeline(
     noise_dataset = []
 
     for i in range(0, len(dataset), batch_size):
+        print(f" batch_size {i} is started =======================")
         raw_batch = dataset[i : i + batch_size]
         batch_text = [text for text in raw_batch if len(text.split()) >= MIN_WORDS]
         if not batch_text:
