@@ -325,6 +325,7 @@ def generation_pipeline(
     dataset_path: str = "./tts_input_dataset.json",
     combined_path: str = "./combined_dataset.json",
     output_path: str = "sft_train.json",
+    discarded_path: str = "discarded_samples.json",
     noise_dir: str = "/kaggle/working/musan_noise/noise/free-sound/",
     asr_model_name: str = "tiny.en",
     tts_model_name: str = "kokoro-v1.0.onnx",
@@ -346,6 +347,7 @@ def generation_pipeline(
     )
 
     noise_dataset = []
+    discarded_dataset = []
 
     for i in range(0, len(tts_texts), batch_size):
         print(f" batch_size {i} is started =======================")
@@ -406,9 +408,23 @@ def generation_pipeline(
                         "refined_text": refined_text,
                     }
                 )
+            else:
+                print(f"[DISCARD] WER: {wer:.2%}   CER: {cer:.2%}\n")
+                discarded_dataset.append(
+                    {
+                        "raw_asr": raw_asr,
+                        "refined_text": refined_text,
+                        "tts_text": tts_text,
+                        "wer": round(wer, 4),
+                        "cer": round(cer, 4),
+                    }
+                )
 
     with open(output_path, "w") as f:
         json.dump(noise_dataset, f, indent=2)
+
+    with open(discarded_path, "w") as f:
+        json.dump(discarded_dataset, f, indent=2)
 
     return noise_dataset
 
@@ -437,6 +453,12 @@ if __name__ == "__main__":
         help="Output JSON file destination",
     )
     parser.add_argument(
+        "--discarded_path",
+        type=str,
+        default="discarded_samples.json",
+        help="Destination file for discarded samples",
+    )
+    parser.add_argument(
         "--noise_dir",
         type=str,
         default="/kaggle/working/musan_noise/noise/free-sound/",
@@ -461,6 +483,7 @@ if __name__ == "__main__":
         dataset_path=args.dataset_path,
         combined_path=args.combined_path,
         output_path=args.output_path,
+        discarded_path=args.discarded_path,
         noise_dir=args.noise_dir,
         asr_model_name=args.asr_model,
         tts_model_name=args.tts_model,
