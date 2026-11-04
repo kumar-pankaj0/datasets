@@ -1,6 +1,6 @@
 """
 =============================================================================
-DATASET GENERATION PIPELINE — ASR Post-Refinement Training Data
+MULTI-GPU DATASET GENERATION PIPELINE — ASR Post-Refinement Training Data
 =============================================================================
 
 NOISE SETUP (run once before first use)
@@ -52,20 +52,23 @@ HYPERPARAMETERS
 
 Execution Examples
 
-    # Run with default parameters (batch_size=16)
+    # Run on all available GPUs with default batch size (16)
     python code/tts_asr_generation_pipeline.py
 
-    # Custom batch size and output location
-    python code/tts_asr_generation_pipeline.py
-    --batch_size 32 --output_path ./custom_sft.json
+    # Specify 2 GPUs and custom output location
+    python code/tts_asr_generation_pipeline.py --num_gpus 2 --output_path ./custom_sft.json
 
     # Custom Whisper model and noise directory
-    python code/tts_asr_generation_pipeline.py
-    --asr_model base.en --noise_dir
-    ./musan_noise/noise/free-sound/
+    python code/tts_asr_generation_pipeline.py --asr_model base.en --noise_dir ./musan_noise/noise/free-sound/
 
 =============================================================================
 """
+
+import os
+
+# ── Prevent CPU thread thrashing across multi-GPU workers ──
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 import soundfile as sf
 import torchaudio
@@ -113,13 +116,13 @@ from torch_audiomentations.core.transforms_interface import BaseWaveformTransfor
 from torch_audiomentations.utils.object_dict import ObjectDict
 
 from nltk.translate.chrf_score import sentence_chrf
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel, download_model
 import torch
+import torch.multiprocessing as mp
 import jiwer
 import numpy as np
 import json
 import argparse
-import os
 from pathlib import Path
 
 try:
@@ -150,9 +153,19 @@ TARGET_SAMPLE_RATE = 16000
 def load_models(tts_model_name="kokoro-v1.0.onnx", asr_model_name="tiny.en"):
     tts_model = Kokoro(tts_model_name, "voices-v1.0.bin")
 
-    compute_type = "float16" if torch.cuda.is_available() else "int8"
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    asr_model = WhisperModel(asr_model_name, device=device, compute_type=compute_type)
+    # Because CUDA_VISIBLE_DEVICES is set per worker, the assigned GPU is always index 0
+    if torch.cuda.is_available():
+        asr_model = WhisperModel(
+            asr_model_name,
+            device="cuda",
+            device_index=0,
+            compute_type="float16",
+            cpu_threads=2,
+        )
+    else:
+        asr_model = WhisperModel(
+            asr_model_name, device="cpu", compute_type="int8", cpu_threads=2
+        )
 
     return tts_model, asr_model
 
@@ -186,7 +199,7 @@ def load_tts_dataset(
     path = resolve_path(path)
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    return data["refined_text"]
+    return list(data["refined_text"])
 
 
 class RandomTimeMask(BaseWaveformTransform):
@@ -338,37 +351,41 @@ def calculate_metrics(targets, predictions):
     return result
 
 
-def generation_pipeline(
-    batch_size: int = 16,
-    dataset_path: str = "./datasets/policy_model_dataset/tts_input_dataset.json",
-    combined_path: str = "./datasets/policy_model_dataset/combined_dataset.json",
-    output_path: str = "sft_train.json",
-    discarded_path: str = "discarded_samples.json",
-    noise_dir: str = "/kaggle/working/musan_noise/noise/free-sound/",
-    asr_model_name: str = "tiny.en",
-    tts_model_name: str = "kokoro-v1.0.onnx",
-    debug_samples: int = 3,
-):
+def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
+    # Lock this entire OS process (PyTorch, ONNX, CTranslate2) to physical `gpu_id`
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    torch.set_num_threads(2)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Distinct random seeds per worker
+    np.random.seed(42 + gpu_id)
+    torch.manual_seed(42 + gpu_id)
+
+    # Load slice inside worker to avoid pickling large arrays over IPC
+    tts_texts = load_tts_dataset(args.dataset_path)[start_idx:end_idx]
+    ground_truth_texts = load_ground_truth_dataset(args.combined_path)[start_idx:end_idx]
+
+    print(
+        f"[GPU {gpu_id}] Initialized on {device} | Slice [{start_idx}:{end_idx}] ({len(tts_texts)} items)"
+    )
+
     gpu_augmenter = get_gpu_augmenter(
-        sample_rate=TARGET_SAMPLE_RATE, noise_dir=noise_dir, device=str(device)
+        sample_rate=TARGET_SAMPLE_RATE,
+        noise_dir=args.noise_dir,
+        device=str(device),
     )
-
     tts_model, asr_model = load_models(
-        tts_model_name=tts_model_name, asr_model_name=asr_model_name
-    )
-    tts_texts = load_tts_dataset(dataset_path)
-    ground_truth_texts = load_ground_truth_dataset(combined_path)
-
-    assert len(tts_texts) == len(ground_truth_texts), (
-        f"Length mismatch: {len(tts_texts)} TTS items vs {len(ground_truth_texts)} ground truth records"
+        tts_model_name=args.tts_model,
+        asr_model_name=args.asr_model,
     )
 
     noise_dataset = []
     discarded_dataset = []
+    batch_size = args.batch_size
 
     for i in range(0, len(tts_texts), batch_size):
-        print(f" batch_size {i} is started =======================")
+        print(f"[GPU {gpu_id}] Batch {i}/{len(tts_texts)} =======================")
         batch_indices = [
             idx
             for idx in range(i, min(i + batch_size, len(tts_texts)))
@@ -382,14 +399,16 @@ def generation_pipeline(
 
         noise_transcribe = []
         for text in batch_tts_text:
-            # Randomize speech rate to compress phonemes and trigger dropped syllables
             rand_speed = float(np.random.uniform(1.25, 1.35))
             voice = np.random.choice(["af_sarah", "af_bella", "am_adam", "bf_emma"])
             samples, sample_rate = tts_model.create(text, voice=voice, speed=rand_speed)
+
             audio_tensor = torch.from_numpy(np.array(samples)).float().to(device)
             if sample_rate != TARGET_SAMPLE_RATE:
                 audio_tensor = F_audio.resample(
-                    audio_tensor, orig_freq=sample_rate, new_freq=TARGET_SAMPLE_RATE
+                    audio_tensor,
+                    orig_freq=sample_rate,
+                    new_freq=TARGET_SAMPLE_RATE,
                 )
             with torch.no_grad():
                 noise_voice = noise_addition_gpu(
@@ -397,7 +416,7 @@ def generation_pipeline(
                     augmenter=gpu_augmenter,
                     sample_rate=TARGET_SAMPLE_RATE,
                 )
-            # Disable Whisper's auto-correction context and greedy language modeling
+
             segments, _ = asr_model.transcribe(
                 noise_voice.squeeze().cpu().numpy(),
                 beam_size=BEAM_SIZE,
@@ -418,11 +437,15 @@ def generation_pipeline(
                 and MIN_WER <= wer <= MAX_WER
                 and chrf > 0.03
             ):
-                print(f"[ACCEPTED] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}\n")
-                if debug_count < debug_samples:
-                    print(f"\n\ntts text : {tts_text}\n")
-                    print(f"ground truth refined text : {refined_text}\n")
-                    print(f"raw_asr : {raw_asr}\n")
+                print(
+                    f"[GPU {gpu_id} | ACCEPTED] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}"
+                )
+                if debug_count < args.debug_samples:
+                    print(
+                        f"\n[GPU {gpu_id}] tts text : {tts_text}\n"
+                        f"[GPU {gpu_id}] refined  : {refined_text}\n"
+                        f"[GPU {gpu_id}] raw_asr  : {raw_asr}\n"
+                    )
                     debug_count += 1
                 noise_dataset.append(
                     {
@@ -431,7 +454,9 @@ def generation_pipeline(
                     }
                 )
             else:
-                print(f"[DISCARD] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}\n")
+                print(
+                    f"[GPU {gpu_id} | DISCARD] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}"
+                )
                 discarded_dataset.append(
                     {
                         "raw_asr": raw_asr,
@@ -443,19 +468,116 @@ def generation_pipeline(
                     }
                 )
 
-    with open(output_path, "w") as f:
+    temp_out = f"{args.output_path}.part_{gpu_id}.json"
+    temp_disc = f"{args.discarded_path}.part_{gpu_id}.json"
+
+    with open(temp_out, "w", encoding="utf-8") as f:
         json.dump(noise_dataset, f, indent=2)
 
-    with open(discarded_path, "w") as f:
+    with open(temp_disc, "w", encoding="utf-8") as f:
         json.dump(discarded_dataset, f, indent=2)
 
-    return noise_dataset
+    print(f"[GPU {gpu_id}] Completed! Accepted: {len(noise_dataset)}")
+
+
+def run_multi_gpu_pipeline(args):
+    tts_texts = load_tts_dataset(args.dataset_path)
+    ground_truth_texts = load_ground_truth_dataset(args.combined_path)
+
+    assert len(tts_texts) == len(ground_truth_texts), (
+        f"Length mismatch: {len(tts_texts)} TTS items vs {len(ground_truth_texts)} ground truth records"
+    )
+
+    total_samples = len(tts_texts)
+    del tts_texts, ground_truth_texts  # Free memory in parent coordinator
+
+    detected_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    num_gpus = (
+        min(args.num_gpus, max(1, detected_gpus))
+        if args.num_gpus is not None
+        else max(1, detected_gpus)
+    )
+
+    print("=================================================================")
+    print(f"Total dataset size : {total_samples}")
+    print(f"Workers / GPUs     : {num_gpus}")
+    print("=================================================================")
+
+    # Pre-cache Whisper weights once before spawning workers
+    download_model(args.asr_model)
+
+    if num_gpus == 1:
+        gpu_worker(0, 0, total_samples, args)
+        os.replace(f"{args.output_path}.part_0.json", args.output_path)
+        os.replace(f"{args.discarded_path}.part_0.json", args.discarded_path)
+        return
+
+    chunk_size = (total_samples + num_gpus - 1) // num_gpus
+    processes = []
+
+    for gpu_id in range(num_gpus):
+        start_idx = gpu_id * chunk_size
+        end_idx = min(start_idx + chunk_size, total_samples)
+        if start_idx >= end_idx:
+            continue
+
+        p = mp.Process(
+            target=gpu_worker,
+            args=(gpu_id, start_idx, end_idx, args),
+        )
+        p.start()
+        processes.append((gpu_id, p))
+
+    for gpu_id, p in processes:
+        p.join()
+        if p.exitcode != 0:
+            raise RuntimeError(
+                f"Worker on GPU {gpu_id} crashed with exit code {p.exitcode}"
+            )
+
+    final_noise_dataset = []
+    final_discarded_dataset = []
+
+    for gpu_id in range(num_gpus):
+        temp_out = f"{args.output_path}.part_{gpu_id}.json"
+        temp_disc = f"{args.discarded_path}.part_{gpu_id}.json"
+
+        if os.path.exists(temp_out):
+            with open(temp_out, "r", encoding="utf-8") as f:
+                final_noise_dataset.extend(json.load(f))
+            os.remove(temp_out)
+
+        if os.path.exists(temp_disc):
+            with open(temp_disc, "r", encoding="utf-8") as f:
+                final_discarded_dataset.extend(json.load(f))
+            os.remove(temp_disc)
+
+    with open(args.output_path, "w", encoding="utf-8") as f:
+        json.dump(final_noise_dataset, f, indent=2)
+
+    with open(args.discarded_path, "w", encoding="utf-8") as f:
+        json.dump(final_discarded_dataset, f, indent=2)
+
+    print("=================================================================")
+    print(f"Done! Accepted: {len(final_noise_dataset)} -> {args.output_path}")
+    print(f"Discarded     : {len(final_discarded_dataset)} -> {args.discarded_path}")
+    print("=================================================================")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TTS-ASR Noise Generation Pipeline")
+    mp.set_start_method("spawn", force=True)
+
+    parser = argparse.ArgumentParser(
+        description="Multi-GPU TTS-ASR Noise Generation Pipeline"
+    )
     parser.add_argument(
         "--batch_size", type=int, default=16, help="Batch size for processing"
+    )
+    parser.add_argument(
+        "--num_gpus",
+        type=int,
+        default=None,
+        help="Number of GPUs to use (defaults to all available)",
     )
     parser.add_argument(
         "--dataset_path",
@@ -501,14 +623,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    generation_pipeline(
-        batch_size=args.batch_size,
-        dataset_path=args.dataset_path,
-        combined_path=args.combined_path,
-        output_path=args.output_path,
-        discarded_path=args.discarded_path,
-        noise_dir=args.noise_dir,
-        asr_model_name=args.asr_model,
-        tts_model_name=args.tts_model,
-        debug_samples=args.debug_samples,
-    )
+    run_multi_gpu_pipeline(args)
