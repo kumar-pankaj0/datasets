@@ -116,7 +116,7 @@ from torch_audiomentations.core.transforms_interface import BaseWaveformTransfor
 from torch_audiomentations.utils.object_dict import ObjectDict
 
 from nltk.translate.chrf_score import sentence_chrf
-from faster_whisper import WhisperModel, download_model
+from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 import torch
 import torch.multiprocessing as mp
 import jiwer
@@ -150,24 +150,38 @@ CONDITION_ON_PREVIOUS_TEXT = False
 TARGET_SAMPLE_RATE = 16000
 
 
+def pre_phonemize_batch(tts_model, texts: list[str], lang: str = "en-us") -> list[str]:
+    """
+    Converts a batch of raw text strings to phonemes on CPU in one pass.
+    Bypasses espeak-ng during subsequent GPU neural synthesis.
+    """
+    list_phonemize = []
+    for text in texts:
+        phonemize_text = tts_model.tokenizer.phonemize(text, lang=lang)
+        list_phonemize.append(phonemize_text)
+    return list_phonemize
+
+
 def load_models(tts_model_name="kokoro-v1.0.onnx", asr_model_name="tiny.en"):
     tts_model = Kokoro(tts_model_name, "voices-v1.0.bin")
 
-    # Because CUDA_VISIBLE_DEVICES is set per worker, the assigned GPU is always index 0
-    if torch.cuda.is_available():
-        asr_model = WhisperModel(
-            asr_model_name,
-            device="cuda",
-            device_index=0,
-            compute_type="float16",
-            cpu_threads=2,
-        )
-    else:
-        asr_model = WhisperModel(
-            asr_model_name, device="cpu", compute_type="int8", cpu_threads=2
-        )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-    return tts_model, asr_model
+    # Map short names (e.g. tiny.en) to HuggingFace model repo
+    if not asr_model_name.startswith("openai/whisper-") and "/" not in asr_model_name:
+        hf_model_id = f"openai/whisper-{asr_model_name}"
+    else:
+        hf_model_id = asr_model_name
+
+    processor = AutoProcessor.from_pretrained(hf_model_id)
+    asr_model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        hf_model_id,
+        torch_dtype=torch_dtype,
+        low_cpu_mem_usage=True,
+    ).to(device)
+
+    return tts_model, asr_model, processor
 
 
 def resolve_path(path: str) -> str:
@@ -364,7 +378,9 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
 
     # Load slice inside worker to avoid pickling large arrays over IPC
     tts_texts = load_tts_dataset(args.dataset_path)[start_idx:end_idx]
-    ground_truth_texts = load_ground_truth_dataset(args.combined_path)[start_idx:end_idx]
+    ground_truth_texts = load_ground_truth_dataset(args.combined_path)[
+        start_idx:end_idx
+    ]
 
     print(
         f"[GPU {gpu_id}] Initialized on {device} | Slice [{start_idx}:{end_idx}] ({len(tts_texts)} items)"
@@ -375,7 +391,7 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
         noise_dir=args.noise_dir,
         device=str(device),
     )
-    tts_model, asr_model = load_models(
+    tts_model, asr_model, processor = load_models(
         tts_model_name=args.tts_model,
         asr_model_name=args.asr_model,
     )
@@ -397,34 +413,66 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
         batch_tts_text = [tts_texts[idx] for idx in batch_indices]
         batch_ground_truth = [ground_truth_texts[idx] for idx in batch_indices]
 
-        noise_transcribe = []
-        for text in batch_tts_text:
+        # Step A: Pre-phonemize entire batch on CPU (zero GPU idle gaps)
+        phonemize_batch = pre_phonemize_batch(tts_model=tts_model, texts=batch_tts_text)
+
+        # Step B: Pure GPU Kokoro synthesis (is_phonemes=True skips espeak-ng)
+        audio_tensors = []
+        audio_lengths = []
+        for phonemize in phonemize_batch:
             rand_speed = float(np.random.uniform(1.25, 1.35))
             voice = np.random.choice(["af_sarah", "af_bella", "am_adam", "bf_emma"])
-            samples, sample_rate = tts_model.create(text, voice=voice, speed=rand_speed)
+            samples, sample_rate = tts_model.create(
+                phonemize, voice=voice, speed=rand_speed, is_phonemes=True
+            )
 
-            audio_tensor = torch.from_numpy(np.array(samples)).float().to(device)
+            audio_tensor = torch.from_numpy(np.array(samples, dtype=np.float32)).to(device)
             if sample_rate != TARGET_SAMPLE_RATE:
                 audio_tensor = F_audio.resample(
                     audio_tensor,
                     orig_freq=sample_rate,
                     new_freq=TARGET_SAMPLE_RATE,
                 )
-            with torch.no_grad():
-                noise_voice = noise_addition_gpu(
-                    audio_tensor,
-                    augmenter=gpu_augmenter,
-                    sample_rate=TARGET_SAMPLE_RATE,
-                )
+            # Flatten (1, T) to 1D (T,) to store a flat list [audio_1, audio_2] instead of nested [[audio_1], [audio_2]]
+            flat_audio = audio_tensor.squeeze()
+            audio_tensors.append(flat_audio)
+            audio_lengths.append(flat_audio.shape[0])
 
-            segments, _ = asr_model.transcribe(
-                noise_voice.squeeze().cpu().numpy(),
-                beam_size=BEAM_SIZE,
-                condition_on_previous_text=CONDITION_ON_PREVIOUS_TEXT,
-                temperature=TEMPERATURE,
+        # Step C: True Batched GPU Noise Addition (1 single GPU kernel for all B items)
+        max_len = max(audio_lengths)
+        batch_audios = torch.zeros(
+            size=(len(audio_tensors), 1, max_len), dtype=torch.float32, device=device
+        )
+        for idx, (audio, length) in enumerate(zip(audio_tensors, audio_lengths)):
+            batch_audios[idx, 0, :length] = audio
+
+        with torch.no_grad():
+            noise_voice = noise_addition_gpu(
+                batch_audios,
+                augmenter=gpu_augmenter,
+                sample_rate=TARGET_SAMPLE_RATE,
             )
-            noise_raw_text = " ".join([seg.text.strip() for seg in segments])
-            noise_transcribe.append(noise_raw_text)
+
+        # Step D: True Batched Whisper Inference on GPU
+        audio_list = [
+            noise_voice[idx, 0, :length].cpu().numpy()
+            for idx, length in enumerate(audio_lengths)
+        ]
+        inputs = processor(
+            audio_list,
+            sampling_rate=TARGET_SAMPLE_RATE,
+            return_tensors="pt",
+        ).to(device, dtype=torch.float16 if torch.cuda.is_available() else torch.float32)
+
+        with torch.no_grad():
+            predicted_ids = asr_model.generate(
+                inputs.input_features,
+                max_new_tokens=128,
+            )
+        raw_transcriptions = processor.batch_decode(
+            predicted_ids, skip_special_tokens=True
+        )
+        noise_transcribe = [t.strip() for t in raw_transcriptions]
 
         metrics = calculate_metrics(batch_tts_text, noise_transcribe)
         debug_count = 0
@@ -432,11 +480,7 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
             noise_transcribe, batch_ground_truth, batch_tts_text, metrics
         ):
             chrf = sentence_chrf(tts_text, raw_asr)
-            if (
-                MIN_CER <= cer <= MAX_CER
-                and MIN_WER <= wer <= MAX_WER
-                and chrf > 0.03
-            ):
+            if MIN_CER <= cer <= MAX_CER and MIN_WER <= wer <= MAX_WER and chrf > 0.03:
                 print(
                     f"[GPU {gpu_id} | ACCEPTED] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}"
                 )
@@ -504,7 +548,13 @@ def run_multi_gpu_pipeline(args):
     print("=================================================================")
 
     # Pre-cache Whisper weights once before spawning workers
-    download_model(args.asr_model)
+    hf_model_id = (
+        f"openai/whisper-{args.asr_model}"
+        if not args.asr_model.startswith("openai/whisper-") and "/" not in args.asr_model
+        else args.asr_model
+    )
+    AutoProcessor.from_pretrained(hf_model_id)
+    AutoModelForSpeechSeq2Seq.from_pretrained(hf_model_id)
 
     if num_gpus == 1:
         gpu_worker(0, 0, total_samples, args)
