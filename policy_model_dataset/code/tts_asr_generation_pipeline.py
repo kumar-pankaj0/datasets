@@ -163,7 +163,15 @@ def pre_phonemize_batch(tts_model, texts: list[str], lang: str = "en-us") -> lis
 
 
 def load_models(tts_model_name="kokoro-v1.0.onnx", asr_model_name="tiny.en"):
-    tts_model = Kokoro(tts_model_name, "voices-v1.0.bin")
+    # Use CUDAExecutionProvider so Kokoro ONNX graph runs on GPU, not CPU
+    import onnxruntime as _ort
+    _ort_providers = (
+        ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        if "CUDAExecutionProvider" in _ort.get_available_providers()
+        else ["CPUExecutionProvider"]
+    )
+    print(f"[load_models] ONNX providers: {_ort_providers}")
+    tts_model = Kokoro(tts_model_name, "voices-v1.0.bin", providers=_ort_providers)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
