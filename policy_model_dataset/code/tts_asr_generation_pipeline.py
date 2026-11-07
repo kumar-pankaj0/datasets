@@ -107,7 +107,7 @@ if not hasattr(torchaudio, "info"):
     torchaudio.info = _info
 
 import torchaudio.functional as F_audio
-from kokoro_onnx import Kokoro
+from kokoro import KPipeline
 from torch_audiomentations import (
     Compose,
     AddBackgroundNoise,
@@ -150,28 +150,12 @@ CONDITION_ON_PREVIOUS_TEXT = False
 TARGET_SAMPLE_RATE = 16000
 
 
-def pre_phonemize_batch(tts_model, texts: list[str], lang: str = "en-us") -> list[str]:
-    """
-    Converts a batch of raw text strings to phonemes on CPU in one pass.
-    Bypasses espeak-ng during subsequent GPU neural synthesis.
-    """
-    list_phonemize = []
-    for text in texts:
-        phonemize_text = tts_model.tokenizer.phonemize(text, lang=lang)
-        list_phonemize.append(phonemize_text)
-    return list_phonemize
+def load_models(asr_model_name="tiny.en"):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-
-def load_models(tts_model_name="kokoro-v1.0.onnx", asr_model_name="tiny.en"):
-    # Use CUDAExecutionProvider so Kokoro ONNX graph runs on GPU, not CPU
-    import onnxruntime as _ort
-    _ort_providers = (
-        ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        if "CUDAExecutionProvider" in _ort.get_available_providers()
-        else ["CPUExecutionProvider"]
-    )
-    print(f"[load_models] ONNX providers: {_ort_providers}")
-    tts_model = Kokoro(tts_model_name, "voices-v1.0.bin", providers=_ort_providers)
+    # KPipeline runs Kokoro-82M natively on PyTorch CUDA — no ONNX Runtime needed
+    tts_model = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M", device=device)
+    print(f"[load_models] KPipeline device: {device}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
@@ -400,7 +384,6 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
         device=str(device),
     )
     tts_model, asr_model, processor = load_models(
-        tts_model_name=args.tts_model,
         asr_model_name=args.asr_model,
     )
 
@@ -421,28 +404,31 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
         batch_tts_text = [tts_texts[idx] for idx in batch_indices]
         batch_ground_truth = [ground_truth_texts[idx] for idx in batch_indices]
 
-        # Step A: Pre-phonemize entire batch on CPU (zero GPU idle gaps)
-        print(f"[GPU {gpu_id}][A] Phonemizing {len(batch_tts_text)} sentences...")
-        phonemize_batch = pre_phonemize_batch(tts_model=tts_model, texts=batch_tts_text)
-
-        # Step B: Pure GPU Kokoro synthesis (is_phonemes=True skips espeak-ng)
-        print(f"[GPU {gpu_id}][B] TTS synthesis | {len(phonemize_batch)} items")
+        # Step A+B: KPipeline handles phonemization + GPU synthesis in one pass
+        print(f"[GPU {gpu_id}][A+B] TTS synthesis via KPipeline | {len(batch_tts_text)} sentences")
         audio_tensors = []
         audio_lengths = []
-        for phonemize in phonemize_batch:
+        for text in batch_tts_text:
             rand_speed = float(np.random.uniform(1.25, 1.35))
             voice = np.random.choice(["af_sarah", "af_bella", "am_adam", "bf_emma"])
-            samples, sample_rate = tts_model.create(
-                phonemize, voice=voice, speed=rand_speed, is_phonemes=True
+            # KPipeline yields (graphemes, phonemes, audio) chunks per sentence
+            chunks = []
+            for _, _, audio_chunk in tts_model(text, voice=voice, speed=rand_speed):
+                if isinstance(audio_chunk, torch.Tensor):
+                    chunks.append(audio_chunk.detach().cpu().numpy())
+                else:
+                    chunks.append(np.asarray(audio_chunk, dtype=np.float32))
+            if not chunks:
+                continue
+            # Concatenate sentence chunks → single 1D numpy array at 24kHz
+            audio_np = np.concatenate(chunks).astype(np.float32)
+            audio_tensor = torch.from_numpy(audio_np).to(device)
+            # Resample 24kHz (Kokoro native) → TARGET_SAMPLE_RATE (16kHz for Whisper)
+            audio_tensor = F_audio.resample(
+                audio_tensor,
+                orig_freq=24000,
+                new_freq=TARGET_SAMPLE_RATE,
             )
-
-            audio_tensor = torch.from_numpy(np.array(samples, dtype=np.float32)).to(device)
-            if sample_rate != TARGET_SAMPLE_RATE:
-                audio_tensor = F_audio.resample(
-                    audio_tensor,
-                    orig_freq=sample_rate,
-                    new_freq=TARGET_SAMPLE_RATE,
-                )
             # Flatten (1, T) to 1D (T,) to store a flat list [audio_1, audio_2] instead of nested [[audio_1], [audio_2]]
             flat_audio = audio_tensor.squeeze()
             audio_tensors.append(flat_audio)
@@ -674,9 +660,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--asr_model", type=str, default="tiny.en", help="Whisper model name"
-    )
-    parser.add_argument(
-        "--tts_model", type=str, default="kokoro-v1.0.onnx", help="Kokoro ONNX model"
     )
     parser.add_argument(
         "--debug_samples",
