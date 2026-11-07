@@ -152,13 +152,11 @@ TARGET_SAMPLE_RATE = 16000
 
 def load_models(asr_model_name="tiny.en"):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
     # KPipeline runs Kokoro-82M natively on PyTorch CUDA — no ONNX Runtime needed
     tts_model = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M", device=device)
     print(f"[load_models] KPipeline device: {device}")
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
     # Map short names (e.g. tiny.en) to HuggingFace model repo
     if not asr_model_name.startswith("openai/whisper-") and "/" not in asr_model_name:
