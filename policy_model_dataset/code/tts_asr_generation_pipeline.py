@@ -414,9 +414,11 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
         batch_ground_truth = [ground_truth_texts[idx] for idx in batch_indices]
 
         # Step A: Pre-phonemize entire batch on CPU (zero GPU idle gaps)
+        print(f"[GPU {gpu_id}][A] Phonemizing {len(batch_tts_text)} sentences...")
         phonemize_batch = pre_phonemize_batch(tts_model=tts_model, texts=batch_tts_text)
 
         # Step B: Pure GPU Kokoro synthesis (is_phonemes=True skips espeak-ng)
+        print(f"[GPU {gpu_id}][B] TTS synthesis | {len(phonemize_batch)} items")
         audio_tensors = []
         audio_lengths = []
         for phonemize in phonemize_batch:
@@ -440,6 +442,7 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
 
         # Step C: True Batched GPU Noise Addition (1 single GPU kernel for all B items)
         max_len = max(audio_lengths)
+        print(f"[GPU {gpu_id}][C] Noise augmentation | batch shape: ({len(audio_tensors)}, 1, {max_len})")
         batch_audios = torch.zeros(
             size=(len(audio_tensors), 1, max_len), dtype=torch.float32, device=device
         )
@@ -454,6 +457,7 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
             )
 
         # Step D: True Batched Whisper Inference on GPU
+        print(f"[GPU {gpu_id}][D] Whisper inference | batch: {len(audio_lengths)} clips")
         audio_list = [
             noise_voice[idx, 0, :length].cpu().numpy()
             for idx, length in enumerate(audio_lengths)
@@ -473,6 +477,7 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
             predicted_ids, skip_special_tokens=True
         )
         noise_transcribe = [t.strip() for t in raw_transcriptions]
+        print(f"[GPU {gpu_id}][RESULT] transcribed={len(noise_transcribe)} | sample: {noise_transcribe[0][:60] if noise_transcribe else 'N/A'}")
 
         metrics = calculate_metrics(batch_tts_text, noise_transcribe)
         debug_count = 0
