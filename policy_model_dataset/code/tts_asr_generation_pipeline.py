@@ -544,14 +544,18 @@ def run_multi_gpu_pipeline(args):
     print(f"Workers / GPUs     : {num_gpus}")
     print("=================================================================")
 
-    # Pre-cache Whisper weights once before spawning workers
+    # Pre-cache Whisper weights to disk once before spawning workers.
+    # Force CPU so parent process does NOT allocate any GPU VRAM.
+    # Workers will each load independently onto their own isolated GPU.
     hf_model_id = (
         f"openai/whisper-{args.asr_model}"
         if not args.asr_model.startswith("openai/whisper-") and "/" not in args.asr_model
         else args.asr_model
     )
     AutoProcessor.from_pretrained(hf_model_id)
-    AutoModelForSpeechSeq2Seq.from_pretrained(hf_model_id)
+    AutoModelForSpeechSeq2Seq.from_pretrained(hf_model_id, low_cpu_mem_usage=True, device_map="cpu")
+    # Immediately discard — this was only to warm the HF disk cache
+    print(f"[pre-cache] Whisper weights cached to disk. Parent process holds NO GPU memory.")
 
     if num_gpus == 1:
         gpu_worker(0, 0, total_samples, args)
