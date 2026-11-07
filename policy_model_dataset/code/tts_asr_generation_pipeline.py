@@ -150,12 +150,14 @@ CONDITION_ON_PREVIOUS_TEXT = False
 TARGET_SAMPLE_RATE = 16000
 
 
-def load_models(asr_model_name="tiny.en"):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+def load_models(asr_model_name="tiny.en", device=None):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    is_cuda = (isinstance(device, torch.device) and device.type == "cuda") or str(device).startswith("cuda")
+    torch_dtype = torch.float16 if is_cuda else torch.float32
 
     # KPipeline runs Kokoro-82M natively on PyTorch CUDA — no ONNX Runtime needed
-    tts_model = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M", device=device)
+    tts_model = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M", device=str(device))
     print(f"[load_models] KPipeline device: {device}")
 
     # Map short names (e.g. tiny.en) to HuggingFace model repo
@@ -356,11 +358,12 @@ def calculate_metrics(targets, predictions):
 
 
 def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
-    # Lock this entire OS process (PyTorch, ONNX, CTranslate2) to physical `gpu_id`
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     torch.set_num_threads(2)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+        device = torch.device(f"cuda:{gpu_id}")
+    else:
+        device = torch.device("cpu")
 
     # Distinct random seeds per worker
     np.random.seed(42 + gpu_id)
@@ -383,6 +386,7 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
     )
     tts_model, asr_model, processor = load_models(
         asr_model_name=args.asr_model,
+        device=device,
     )
 
     noise_dataset = []
@@ -544,18 +548,18 @@ def run_multi_gpu_pipeline(args):
     print(f"Workers / GPUs     : {num_gpus}")
     print("=================================================================")
 
-    # Pre-cache Whisper weights to disk once before spawning workers.
-    # Force CPU so parent process does NOT allocate any GPU VRAM.
-    # Workers will each load independently onto their own isolated GPU.
+    # Pre-cache Whisper & Kokoro weights to disk once before spawning workers.
+    # Uses snapshot_download to cache files without creating any tensors in GPU memory.
+    from huggingface_hub import snapshot_download
     hf_model_id = (
         f"openai/whisper-{args.asr_model}"
         if not args.asr_model.startswith("openai/whisper-") and "/" not in args.asr_model
         else args.asr_model
     )
+    snapshot_download(repo_id=hf_model_id)
+    snapshot_download(repo_id="hexgrad/Kokoro-82M")
     AutoProcessor.from_pretrained(hf_model_id)
-    AutoModelForSpeechSeq2Seq.from_pretrained(hf_model_id, low_cpu_mem_usage=True, device_map="cpu")
-    # Immediately discard — this was only to warm the HF disk cache
-    print(f"[pre-cache] Whisper weights cached to disk. Parent process holds NO GPU memory.")
+    print(f"[pre-cache] Whisper & Kokoro weights cached to disk. Zero GPU memory allocated in parent.")
 
     if num_gpus == 1:
         gpu_worker(0, 0, total_samples, args)
