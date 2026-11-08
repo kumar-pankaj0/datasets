@@ -419,6 +419,58 @@ def calculate_metrics(tts_targets, refined_targets, predictions):
     return result
 
 
+def print_statement(
+    event_type: str,
+    level: str = "INFO",
+    gpu_id: int = 0,
+    is_debug: bool = False,
+    **kwargs,
+):
+    """
+    Centralized logging function with clean if/elif/else dispatching.
+    Handles phase transitions, batch progress, sample decisions, and debug diffs.
+    """
+    if event_type == "BATCH_START":
+        batch_idx = kwargs.get("batch_idx", 0)
+        total_items = kwargs.get("total_items", 0)
+        print(f"[GPU {gpu_id}] Batch {batch_idx}/{total_items} =======================")
+
+    elif event_type == "PHASE":
+        phase = kwargs.get("phase", "")
+        message = kwargs.get("message", "")
+        print(f"[GPU {gpu_id}][{phase}] {message}")
+
+    elif event_type == "RESULT_SUMMARY":
+        transcribed_count = kwargs.get("count", 0)
+        sample = kwargs.get("sample", "N/A")
+        print(
+            f"[GPU {gpu_id}][RESULT] transcribed={transcribed_count} | sample: {sample}"
+        )
+
+    elif event_type == "SAMPLE_DECISION":
+        status = kwargs.get("status", "DISCARD")
+        edits = kwargs.get("edits", 0)
+        req_edits = kwargs.get("required_edits", 0)
+        len_ratio = kwargs.get("len_ratio", 0.0)
+        wer = kwargs.get("wer", 0.0)
+        cer = kwargs.get("cer", 0.0)
+        print(
+            f"[GPU {gpu_id} | {status}] edits: {edits}/{req_edits}   len: {len_ratio:.2f}   WER: {wer:.2%}   CER: {cer:.2%}"
+        )
+
+    elif event_type == "DEBUG_DIFF":
+        if is_debug or level == "DEBUG":
+            tts_text = kwargs.get("tts_text", "")
+            refined_text = kwargs.get("refined_text", "")
+            raw_asr = kwargs.get("raw_asr", "")
+            print(
+                f"\n[GPU {gpu_id} DEBUG]\n"
+                f"  tts text : {tts_text}\n"
+                f"  refined  : {refined_text}\n"
+                f"  raw_asr  : {raw_asr}\n"
+            )
+
+
 def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
     torch.set_num_threads(2)
     if torch.cuda.is_available():
@@ -459,8 +511,11 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
     tail_samples = int(TAIL_SILENCE_SEC * TARGET_SAMPLE_RATE)
 
     for i in range(0, len(tts_texts), batch_size):
-        print(
-            f"[GPU {gpu_id}] Batch {i}/{len(tts_texts)} ======================="
+        print_statement(
+            "BATCH_START",
+            gpu_id=gpu_id,
+            batch_idx=i,
+            total_items=len(tts_texts),
         )
         batch_indices = [
             idx
@@ -476,8 +531,11 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
         batch_ground_truth = [ground_truth_texts[idx] for idx in batch_indices]
 
         # Step A+B: KPipeline handles phonemization + GPU synthesis in one pass
-        print(
-            f"[GPU {gpu_id}][A+B] TTS synthesis via KPipeline | {len(batch_tts_text)} sentences"
+        print_statement(
+            "PHASE",
+            gpu_id=gpu_id,
+            phase="A+B",
+            message=f"TTS synthesis via KPipeline | {len(batch_tts_text)} sentences",
         )
         audio_tensors = []
         audio_lengths = []
@@ -524,8 +582,11 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
 
         # Step C: True Batched GPU Noise Addition (Repeat audio instead of 0.0s)
         max_len = max(audio_lengths)
-        print(
-            f"[GPU {gpu_id}][C] Complex 3-Layer Noise | batch shape: ({len(audio_tensors)}, 1, {max_len})"
+        print_statement(
+            "PHASE",
+            gpu_id=gpu_id,
+            phase="C",
+            message=f"Complex 3-Layer Noise | batch shape: ({len(audio_tensors)}, 1, {max_len})",
         )
         batch_audios = torch.zeros(
             size=(len(audio_tensors), 1, max_len),
@@ -546,8 +607,11 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
             )
 
         # Step D: True Batched Whisper Inference on GPU
-        print(
-            f"[GPU {gpu_id}][D] Whisper inference | batch: {len(audio_lengths)} clips"
+        print_statement(
+            "PHASE",
+            gpu_id=gpu_id,
+            phase="D",
+            message=f"Whisper inference | batch: {len(audio_lengths)} clips",
         )
         audio_list = [
             noise_voice[idx, 0, :length].cpu().numpy()
@@ -590,8 +654,11 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
             predicted_ids, skip_special_tokens=True
         )
         noise_transcribe = [t.strip() for t in raw_transcriptions]
-        print(
-            f"[GPU {gpu_id}][RESULT] transcribed={len(noise_transcribe)} | sample: {noise_transcribe[0][:60] if noise_transcribe else 'N/A'}"
+        print_statement(
+            "RESULT_SUMMARY",
+            gpu_id=gpu_id,
+            count=len(noise_transcribe),
+            sample=noise_transcribe[0][:60] if noise_transcribe else "N/A",
         )
 
         # ── CHANGE 4B: Filter by scaled required_edits, len_ratio, WER, and CER ──
@@ -609,21 +676,35 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
             noise_transcribe, valid_ground_truth, valid_tts_text, metrics
         ):
             chrf = sentence_chrf(tts_text, raw_asr)
-            if (
+            accepted = (
                 word_edits >= required_edits
                 and MIN_LEN_RATIO <= len_ratio <= MAX_LEN_RATIO
                 and wer <= MAX_WER
                 and cer <= MAX_CER
                 and chrf > 0.03
-            ):
-                print(
-                    f"[GPU {gpu_id} | ACCEPTED] edits: {word_edits}/{required_edits}   len: {len_ratio:.2f}   WER: {wer:.2%}   CER: {cer:.2%}"
-                )
-                if debug_count < args.debug_samples:
-                    print(
-                        f"\n[GPU {gpu_id}] tts text : {tts_text}\n"
-                        f"[GPU {gpu_id}] refined  : {refined_text}\n"
-                        f"[GPU {gpu_id}] raw_asr  : {raw_asr}\n"
+            )
+
+            print_statement(
+                "SAMPLE_DECISION",
+                gpu_id=gpu_id,
+                status="ACCEPTED" if accepted else "DISCARD",
+                edits=word_edits,
+                required_edits=required_edits,
+                len_ratio=len_ratio,
+                wer=wer,
+                cer=cer,
+            )
+
+            if accepted:
+                if args.debug or debug_count < args.debug_samples:
+                    print_statement(
+                        "DEBUG_DIFF",
+                        level="DEBUG",
+                        gpu_id=gpu_id,
+                        is_debug=True,
+                        tts_text=tts_text,
+                        refined_text=refined_text,
+                        raw_asr=raw_asr,
                     )
                     debug_count += 1
                 noise_dataset.append(
@@ -633,9 +714,16 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
                     }
                 )
             else:
-                print(
-                    f"[GPU {gpu_id} | DISCARD] edits: {word_edits}/{required_edits}   len: {len_ratio:.2f}   WER: {wer:.2%}   CER: {cer:.2%}"
-                )
+                if args.debug:
+                    print_statement(
+                        "DEBUG_DIFF",
+                        level="DEBUG",
+                        gpu_id=gpu_id,
+                        is_debug=True,
+                        tts_text=tts_text,
+                        refined_text=refined_text,
+                        raw_asr=raw_asr,
+                    )
                 discarded_dataset.append(
                     {
                         "raw_asr": raw_asr,
@@ -670,7 +758,11 @@ def run_multi_gpu_pipeline(args):
         f"Length mismatch: {len(tts_texts)} TTS items vs {len(ground_truth_texts)} ground truth records"
     )
 
-    total_samples = len(tts_texts)
+    if args.max_samples is not None and args.max_samples > 0:
+        total_samples = min(len(tts_texts), args.max_samples)
+        print(f"[config] Limited input dataset to --max_samples: {total_samples}")
+    else:
+        total_samples = len(tts_texts)
     del tts_texts, ground_truth_texts  # Free memory in parent coordinator
 
     detected_gpus = (
@@ -816,6 +908,17 @@ if __name__ == "__main__":
         type=int,
         default=3,
         help="Number of preview outputs to print",
+    )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=None,
+        help="Maximum number of input samples to process (for quick testing)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable detailed debug inspection prints for each sample",
     )
     args = parser.parse_args()
 
