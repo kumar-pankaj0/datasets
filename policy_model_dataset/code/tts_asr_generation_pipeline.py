@@ -38,13 +38,13 @@ Noise path used in pipeline:
 HYPERPARAMETERS
 =============================================================================
 
-    MIN_SNR_DB          = 3.0     # Primary MUSAN noise min SNR (tougher!)
-    MAX_SNR_DB          = 9.0     # Primary MUSAN noise max SNR
+    MIN_SNR_DB          = 6.0     # Primary MUSAN noise min SNR
+    MAX_SNR_DB          = 12.0    # Primary MUSAN noise max SNR
     WORDS_PER_EDIT      = 18      # Require >= 1 word error per 18 words
     MIN_LEN_RATIO       = 0.85    # Reject truncated ASR outputs (<85% length)
     MAX_LEN_RATIO       = 1.25    # Reject hallucinated ASR outputs (>125% length)
-    MAX_WER             = 0.50    # filter: maximum word error rate
-    MAX_CER             = 0.25    # filter: maximum character error rate
+    MAX_WER             = 0.42    # filter: maximum word error rate
+    MAX_CER             = 0.17    # filter: maximum character error rate
     MIN_WORDS           = 6       # filter: skip sentences shorter than this
     TTS_SPEED_MIN       = 1.25    # random speed lower bound
     TTS_SPEED_MAX       = 1.35    # random speed upper bound
@@ -145,9 +145,9 @@ except ImportError:
     hf_load_dataset = None
 
 
-# ── CHANGE 1: Tougher Noise SNR, Lead-in Padding, & Smarter Filter Rules ──
-MIN_SNR_DB = 3.0
-MAX_SNR_DB = 9.0
+# ── Balanced Noise SNR, Lead-in Padding, & Precision Quality Filters ──
+MIN_SNR_DB = 6.0
+MAX_SNR_DB = 12.0
 
 LEAD_SILENCE_SEC = 0.25  # 250ms lead-in so first syllable isn't cut off
 TAIL_SILENCE_SEC = 0.15  # 150ms tail padding
@@ -155,8 +155,8 @@ TAIL_SILENCE_SEC = 0.15  # 150ms tail padding
 WORDS_PER_EDIT = 18      # Require at least 1 word error per 18 words (min 1)
 MIN_LEN_RATIO = 0.85     # Reject truncated sentences missing >15% of words
 MAX_LEN_RATIO = 1.25     # Reject runaway hallucinations
-MAX_WER = 0.50
-MAX_CER = 0.25
+MAX_WER = 0.42
+MAX_CER = 0.17
 MIN_WORDS = 6
 
 # ── Whisper Inference ──
@@ -333,15 +333,15 @@ def get_gpu_augmenter(
             ),
             # Layer 2: Continuous ambient room/fan hum (fills silent gaps in MUSAN clips)
             AddColoredNoise(
-                min_snr_in_db=10.0,
-                max_snr_in_db=16.0,
+                min_snr_in_db=15.0,
+                max_snr_in_db=22.0,
                 min_f_decay=-3.0,
                 max_f_decay=0.0,
                 p=0.8,
                 sample_rate=sample_rate,
                 output_type="tensor",
             ),
-            # Layer 3A: Primary real-world MUSAN background noise (3-9 dB)
+            # Layer 3A: Primary real-world MUSAN background noise (6-12 dB)
             AddBackgroundNoise(
                 background_paths=noise_dir,
                 min_snr_in_db=MIN_SNR_DB,
@@ -352,8 +352,8 @@ def get_gpu_augmenter(
             # Layer 3B: Secondary overlapping MUSAN noise for multi-source complexity
             AddBackgroundNoise(
                 background_paths=noise_dir,
-                min_snr_in_db=MIN_SNR_DB + 3.0,
-                max_snr_in_db=MAX_SNR_DB + 3.0,
+                min_snr_in_db=10.0,
+                max_snr_in_db=16.0,
                 p=0.6,
                 output_type="tensor",
             ),
@@ -388,6 +388,7 @@ def normalize(text):
     return (
         text.lower()
         .replace("-", " ")  # "re-establish" → "re establish"
+        .replace("_", " ")  # "circuit_breaking_exception" → "circuit breaking exception"
         .replace(",", "")   # "47,312" → "47312"
         .replace(".", "")
         .replace(":", "")
@@ -399,7 +400,7 @@ def normalize(text):
     )
 
 
-# ── CHANGE 4A: Compute word_edits, required_edits, len_ratio, WER, and CER ──
+# ── Compute word_edits, required_edits, len_ratio, WER, and CER ──
 def calculate_metrics(tts_targets, refined_targets, predictions):
     result = []
     for tts_t, ref_t, pred in zip(tts_targets, refined_targets, predictions):
@@ -414,12 +415,13 @@ def calculate_metrics(tts_targets, refined_targets, predictions):
         )
 
         # 2. Scale required edits with paragraph length (1 edit per 18 words, min 1)
+        tts_words = len(norm_tts.split())
         ref_words = len(norm_ref.split())
         pred_words = len(norm_pred.split())
         required_edits = max(1, ref_words // WORDS_PER_EDIT)
 
-        # 3. Length ratio check to catch cut-off / truncated transcriptions
-        len_ratio = pred_words / max(1, ref_words)
+        # 3. Length ratio check measured against tts_words (which contains verbalized symbols)
+        len_ratio = pred_words / max(1, tts_words)
 
         # 4. Best WER & CER between tts_text and refined_text
         wer = min(jiwer.wer(norm_tts, norm_pred), word_out.wer)
