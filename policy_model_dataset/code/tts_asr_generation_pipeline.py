@@ -40,9 +40,8 @@ HYPERPARAMETERS
 
     MIN_SNR_DB          = 8       # AddBackgroundNoise min SNR
     MAX_SNR_DB          = 13      # AddBackgroundNoise max SNR
-    MIN_WER             = 0.08    # filter: minimum word error rate
-    MAX_WER             = 0.55    # filter: maximum word error rate
-    MIN_CER             = 0.03    # filter: minimum character error rate
+    MIN_WORD_EDITS      = 1       # filter: minimum word edits vs refined_text
+    MAX_WER             = 0.50    # filter: maximum word error rate
     MAX_CER             = 0.25    # filter: maximum character error rate
     MIN_WORDS           = 6       # filter: skip sentences shorter than this
     TTS_SPEED_MIN       = 1.25    # random speed lower bound
@@ -107,13 +106,12 @@ if not hasattr(torchaudio, "info"):
     torchaudio.info = _info
 
 import torchaudio.functional as F_audio
+import torch.nn.functional as F_nn
 from kokoro import KPipeline
 from torch_audiomentations import (
     Compose,
     AddBackgroundNoise,
 )
-from torch_audiomentations.core.transforms_interface import BaseWaveformTransform
-from torch_audiomentations.utils.object_dict import ObjectDict
 
 from nltk.translate.chrf_score import sentence_chrf
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
@@ -135,11 +133,10 @@ except ImportError:
 MIN_SNR_DB = 8.0
 MAX_SNR_DB = 13.0
 
-# ── Quality Filters ──
-MIN_WER = 0.08
-MAX_WER = 0.40
-MIN_CER = 0.03
-MAX_CER = 0.25
+# ── CHANGE 1: Quality Filters (Count for Minimum, Percentage for Maximum) ──
+MIN_WORD_EDITS = 1  # Must have at least 1 word error compared to refined_text
+MAX_WER = 0.50  # Max 50% word error rate (blocks garbage, allows word splits)
+MAX_CER = 0.25  # Max 25% character error rate (blocks heavily corrupted audio)
 MIN_WORDS = 6
 
 # ── Whisper Inference ──
@@ -153,11 +150,15 @@ TARGET_SAMPLE_RATE = 16000
 def load_models(asr_model_name="tiny.en", device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    is_cuda = (isinstance(device, torch.device) and device.type == "cuda") or str(device).startswith("cuda")
+    is_cuda = (isinstance(device, torch.device) and device.type == "cuda") or str(
+        device
+    ).startswith("cuda")
     torch_dtype = torch.float16 if is_cuda else torch.float32
 
     # KPipeline runs Kokoro-82M natively on PyTorch CUDA — no ONNX Runtime needed
-    tts_model = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M", device=str(device))
+    tts_model = KPipeline(
+        lang_code="a", repo_id="hexgrad/Kokoro-82M", device=str(device)
+    )
     print(f"[load_models] KPipeline device: {device}")
 
     # Map short names (e.g. tiny.en) to HuggingFace model repo
@@ -172,6 +173,7 @@ def load_models(asr_model_name="tiny.en", device=None):
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=True,
     ).to(device)
+    asr_model.eval()
 
     return tts_model, asr_model, processor
 
@@ -192,7 +194,7 @@ def load_ground_truth_dataset(
     if hf_load_dataset is not None:
         try:
             ds = hf_load_dataset("json", data_files=path, split="train")
-            return ds["refined_text"]
+            return list(ds["refined_text"])
         except Exception:
             pass
     with open(path, "r", encoding="utf-8") as f:
@@ -208,85 +210,7 @@ def load_tts_dataset(
     return list(data["refined_text"])
 
 
-class RandomTimeMask(BaseWaveformTransform):
-    """
-    Native torch-audiomentations transform that lives directly inside Compose([]).
-    """
-
-    supported_modes = {"per_batch", "per_example"}
-
-    def __init__(
-        self,
-        min_ratio: float = 0.05,
-        max_ratio: float = 0.15,
-        mode: str = "per_example",
-        p: float = 0.5,
-        sample_rate: int = None,
-        output_type: str = "tensor",
-    ):
-        super().__init__(
-            mode=mode,
-            p=p,
-            sample_rate=sample_rate,
-            output_type=output_type,
-        )
-        self.min_ratio = min_ratio
-        self.max_ratio = max_ratio
-
-    def randomize_parameters(
-        self,
-        samples: torch.Tensor,
-        sample_rate: int = None,
-        targets=None,
-        target_rate=None,
-        **kwargs,
-    ):
-        batch_size, _, total_samples = samples.shape
-        device = samples.device
-
-        # Generate random lengths and start indices for every selected item in the batch
-        ratios = torch.empty(batch_size, device=device).uniform_(
-            self.min_ratio, self.max_ratio
-        )
-        mask_lens = (ratios * total_samples).long()
-
-        start_indices = [
-            int(
-                torch.randint(
-                    0, max(1, total_samples - int(m_len)), (1,), device=device
-                ).item()
-            )
-            for m_len in mask_lens
-        ]
-
-        self.transform_parameters["mask_lens"] = mask_lens
-        self.transform_parameters["start_indices"] = start_indices
-
-    def apply_transform(
-        self,
-        samples: torch.Tensor,
-        sample_rate: int = None,
-        targets=None,
-        target_rate=None,
-        **kwargs,
-    ) -> ObjectDict:
-        out = samples.clone()
-        mask_lens = self.transform_parameters["mask_lens"]
-        start_indices = self.transform_parameters["start_indices"]
-
-        for idx, (start_idx, mask_len) in enumerate(zip(start_indices, mask_lens)):
-            if mask_len > 0:
-                out[idx, :, start_idx : start_idx + mask_len] = 0.0
-
-        return ObjectDict(
-            samples=out,
-            sample_rate=sample_rate,
-            targets=targets,
-            target_rate=target_rate,
-        )
-
-
-# Instantiate the GPU pipeline once on your device
+# ── CHANGE 2: Removed RandomTimeMask; only AddBackgroundNoise is used ──
 def get_gpu_augmenter(
     sample_rate: int = TARGET_SAMPLE_RATE,
     noise_dir: str = "/kaggle/working/musan_noise/noise/free-sound/",
@@ -294,14 +218,6 @@ def get_gpu_augmenter(
 ):
     augmenter = Compose(
         transforms=[
-            # 1. Packet/VoIP chunk dropouts
-            RandomTimeMask(
-                min_ratio=0.05,
-                max_ratio=0.15,
-                p=0.5,
-                sample_rate=sample_rate,
-                output_type="tensor",
-            ),
             AddBackgroundNoise(
                 background_paths=noise_dir,
                 min_snr_in_db=MIN_SNR_DB,
@@ -342,17 +258,33 @@ def normalize(text):
         .replace("-", " ")  # "re-establish" → "re establish"
         .replace(",", "")  # "47,312" → "47312"
         .replace(".", "")
-        .replace("%", " percent")  # optional: "14%" → "14 percent"
+        .replace(":", "")
+        .replace(";", "")
+        .replace("`", "")
+        .replace('"', "")
+        .replace("%", " percent")  # "14%" → "14 percent"
+        .replace("$", "")
     )
 
 
-def calculate_metrics(targets, predictions):
+# ── CHANGE 3: Calculate word_edits (vs refined_text) and min WER/CER ──
+def calculate_metrics(tts_targets, refined_targets, predictions):
     result = []
-    for target, prediction in zip(targets, predictions):
-        target = normalize(target)
-        prediction = normalize(prediction)
+    for tts_t, ref_t, pred in zip(tts_targets, refined_targets, predictions):
+        norm_tts = normalize(tts_t)
+        norm_ref = normalize(ref_t)
+        norm_pred = normalize(pred)
 
-        result.append((jiwer.wer(target, prediction), jiwer.cer(target, prediction)))
+        # 1. Exact count of word mistakes compared to refined_text (for Minimum Filter)
+        word_out = jiwer.process_words(norm_ref, norm_pred)
+        word_edits = word_out.substitutions + word_out.deletions + word_out.insertions
+
+        # 2. Best WER & CER between tts_text and refined_text (for Maximum Filter)
+        # Prevents penalizing Whisper when it writes digits ("30") instead of words ("thirty")
+        wer = min(jiwer.wer(norm_tts, norm_pred), word_out.wer)
+        cer = min(jiwer.cer(norm_tts, norm_pred), jiwer.cer(norm_ref, norm_pred))
+
+        result.append((word_edits, wer, cer))
 
     return result
 
@@ -398,7 +330,9 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
         batch_indices = [
             idx
             for idx in range(i, min(i + batch_size, len(tts_texts)))
-            if len(tts_texts[idx].split()) >= MIN_WORDS
+            if tts_texts[idx]
+            and ground_truth_texts[idx]
+            and len(tts_texts[idx].split()) >= MIN_WORDS
         ]
         if not batch_indices:
             continue
@@ -407,10 +341,15 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
         batch_ground_truth = [ground_truth_texts[idx] for idx in batch_indices]
 
         # Step A+B: KPipeline handles phonemization + GPU synthesis in one pass
-        print(f"[GPU {gpu_id}][A+B] TTS synthesis via KPipeline | {len(batch_tts_text)} sentences")
+        print(
+            f"[GPU {gpu_id}][A+B] TTS synthesis via KPipeline | {len(batch_tts_text)} sentences"
+        )
         audio_tensors = []
         audio_lengths = []
-        for text in batch_tts_text:
+        valid_tts_text = []
+        valid_ground_truth = []
+
+        for text, gt_text in zip(batch_tts_text, batch_ground_truth):
             rand_speed = float(np.random.uniform(1.25, 1.35))
             voice = np.random.choice(["af_sarah", "af_bella", "am_adam", "bf_emma"])
             # KPipeline yields (graphemes, phonemes, audio) chunks per sentence
@@ -431,19 +370,29 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
                 orig_freq=24000,
                 new_freq=TARGET_SAMPLE_RATE,
             )
-            # Flatten (1, T) to 1D (T,) to store a flat list [audio_1, audio_2] instead of nested [[audio_1], [audio_2]]
             flat_audio = audio_tensor.squeeze()
             audio_tensors.append(flat_audio)
             audio_lengths.append(flat_audio.shape[0])
+            valid_tts_text.append(text)
+            valid_ground_truth.append(gt_text)
 
-        # Step C: True Batched GPU Noise Addition (1 single GPU kernel for all B items)
+        if not audio_tensors:
+            continue
+
+        # ── CHANGE 4: Step C — Batched GPU Noise Addition (Repeat audio instead of 0.0s) ──
         max_len = max(audio_lengths)
-        print(f"[GPU {gpu_id}][C] Noise augmentation | batch shape: ({len(audio_tensors)}, 1, {max_len})")
+        print(
+            f"[GPU {gpu_id}][C] Noise augmentation | batch shape: ({len(audio_tensors)}, 1, {max_len})"
+        )
         batch_audios = torch.zeros(
-            size=(len(audio_tensors), 1, max_len), dtype=torch.float32, device=device
+            size=(len(audio_tensors), 1, max_len),
+            dtype=torch.float32,
+            device=device,
         )
         for idx, (audio, length) in enumerate(zip(audio_tensors, audio_lengths)):
-            batch_audios[idx, 0, :length] = audio
+            # Repeat the clip to fill max_len so there are no 0.0s to distort SNR volume!
+            repeats = (max_len // length) + 1
+            batch_audios[idx, 0, :] = audio.repeat(repeats)[:max_len]
 
         with torch.no_grad():
             noise_voice = noise_addition_gpu(
@@ -452,8 +401,11 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
                 sample_rate=TARGET_SAMPLE_RATE,
             )
 
-        # Step D: True Batched Whisper Inference on GPU
-        print(f"[GPU {gpu_id}][D] Whisper inference | batch: {len(audio_lengths)} clips")
+        # ── CHANGE 5: Step D — Batched Whisper Inference (No 30s/128-token cutoff or loops) ──
+        print(
+            f"[GPU {gpu_id}][D] Whisper inference | batch: {len(audio_lengths)} clips"
+        )
+        # Slice back out only the original :length of each clip
         audio_list = [
             noise_voice[idx, 0, :length].cpu().numpy()
             for idx, length in enumerate(audio_lengths)
@@ -462,28 +414,59 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
             audio_list,
             sampling_rate=TARGET_SAMPLE_RATE,
             return_tensors="pt",
-        ).to(device, dtype=torch.float16 if torch.cuda.is_available() else torch.float32)
+            truncation=False,  # Do NOT cut off audio at 30.0 seconds
+            padding="longest",  # Pad to the longest clip in the batch
+            return_attention_mask=True,
+        )
+
+        input_features = inputs.input_features
+        attention_mask = inputs.attention_mask
+
+        # If the longest clip in this batch is < 30s (3000 frames), pad to 3000 so Whisper doesn't crash
+        if input_features.shape[-1] < 3000:
+            pad_len = 3000 - input_features.shape[-1]
+            input_features = F_nn.pad(input_features, (0, pad_len), value=0.0)
+            attention_mask = F_nn.pad(attention_mask, (0, pad_len), value=0)
+
+        target_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        input_features = input_features.to(device, dtype=target_dtype)
+        attention_mask = attention_mask.to(device)
 
         with torch.no_grad():
             predicted_ids = asr_model.generate(
-                inputs.input_features,
-                max_new_tokens=128,
+                input_features,
+                attention_mask=attention_mask,
+                max_new_tokens=512,  # Allows full 120+ word paragraphs to finish
+                num_beams=BEAM_SIZE,
+                do_sample=False,
+                no_repeat_ngram_size=4,  # Stops infinite repetition loops
             )
+
         raw_transcriptions = processor.batch_decode(
             predicted_ids, skip_special_tokens=True
         )
         noise_transcribe = [t.strip() for t in raw_transcriptions]
-        print(f"[GPU {gpu_id}][RESULT] transcribed={len(noise_transcribe)} | sample: {noise_transcribe[0][:60] if noise_transcribe else 'N/A'}")
+        print(
+            f"[GPU {gpu_id}][RESULT] transcribed={len(noise_transcribe)} | sample: {noise_transcribe[0][:60] if noise_transcribe else 'N/A'}"
+        )
 
-        metrics = calculate_metrics(batch_tts_text, noise_transcribe)
+        # ── CHANGE 6: Filter using word_edits >= 1 and MAX_WER / MAX_CER ──
+        metrics = calculate_metrics(
+            valid_tts_text, valid_ground_truth, noise_transcribe
+        )
         debug_count = 0
-        for raw_asr, refined_text, tts_text, (wer, cer) in zip(
-            noise_transcribe, batch_ground_truth, batch_tts_text, metrics
+        for raw_asr, refined_text, tts_text, (word_edits, wer, cer) in zip(
+            noise_transcribe, valid_ground_truth, valid_tts_text, metrics
         ):
             chrf = sentence_chrf(tts_text, raw_asr)
-            if MIN_CER <= cer <= MAX_CER and MIN_WER <= wer <= MAX_WER and chrf > 0.03:
+            if (
+                word_edits >= MIN_WORD_EDITS
+                and wer <= MAX_WER
+                and cer <= MAX_CER
+                and chrf > 0.03
+            ):
                 print(
-                    f"[GPU {gpu_id} | ACCEPTED] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}"
+                    f"[GPU {gpu_id} | ACCEPTED] edits: {word_edits}   WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}"
                 )
                 if debug_count < args.debug_samples:
                     print(
@@ -500,13 +483,14 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
                 )
             else:
                 print(
-                    f"[GPU {gpu_id} | DISCARD] WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}"
+                    f"[GPU {gpu_id} | DISCARD] edits: {word_edits}   WER: {wer:.2%}   CER: {cer:.2%}   chrF: {chrf:.4f}"
                 )
                 discarded_dataset.append(
                     {
                         "raw_asr": raw_asr,
                         "refined_text": refined_text,
                         "tts_text": tts_text,
+                        "word_edits": word_edits,
                         "wer": round(wer, 4),
                         "cer": round(cer, 4),
                         "chrf": round(chrf, 4),
@@ -549,17 +533,20 @@ def run_multi_gpu_pipeline(args):
     print("=================================================================")
 
     # Pre-cache Whisper & Kokoro weights to disk once before spawning workers.
-    # Uses snapshot_download to cache files without creating any tensors in GPU memory.
     from huggingface_hub import snapshot_download
+
     hf_model_id = (
         f"openai/whisper-{args.asr_model}"
-        if not args.asr_model.startswith("openai/whisper-") and "/" not in args.asr_model
+        if not args.asr_model.startswith("openai/whisper-")
+        and "/" not in args.asr_model
         else args.asr_model
     )
     snapshot_download(repo_id=hf_model_id)
     snapshot_download(repo_id="hexgrad/Kokoro-82M")
     AutoProcessor.from_pretrained(hf_model_id)
-    print(f"[pre-cache] Whisper & Kokoro weights cached to disk. Zero GPU memory allocated in parent.")
+    print(
+        "[pre-cache] Whisper & Kokoro weights cached to disk. Zero GPU memory allocated in parent."
+    )
 
     if num_gpus == 1:
         gpu_worker(0, 0, total_samples, args)
