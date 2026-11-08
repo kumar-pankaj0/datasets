@@ -661,6 +661,7 @@ def gpu_worker(gpu_id: int, start_idx: int, end_idx: int, args):
                 num_beams=BEAM_SIZE,
                 do_sample=False,
                 no_repeat_ngram_size=4,
+                return_timestamps=True,
             )
 
         raw_transcriptions = processor.batch_decode(
