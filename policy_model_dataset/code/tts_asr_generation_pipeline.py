@@ -51,14 +51,27 @@ HYPERPARAMETERS
 
 Execution Examples
 
-    # Run on all available GPUs with default batch size (16)
+    # 1. Quick test run (limit to 50 samples with live debug inspection)
+    python code/tts_asr_generation_pipeline.py --max_samples 50 --debug
+
+    # 2. Fast dry run on 20 samples without debug prints
+    python code/tts_asr_generation_pipeline.py --max_samples 20
+
+    # 3. Full production run on all available GPUs (batch size 16)
     python code/tts_asr_generation_pipeline.py
 
-    # Specify 2 GPUs and custom output location
+    # 4. Specify 2 GPUs and custom output location
     python code/tts_asr_generation_pipeline.py --num_gpus 2 --output_path ./custom_sft.json
 
-    # Custom Whisper model and noise directory
+    # 5. Custom Whisper model and noise directory
     python code/tts_asr_generation_pipeline.py --asr_model base.en --noise_dir ./musan_noise/noise/free-sound/
+
+CLI Options:
+    --max_samples N    : Limit input dataset to first N samples (ideal for quick tests)
+    --debug            : Print full side-by-side text comparisons (TTS, Refined, Raw ASR)
+    --debug_samples N  : Number of sample previews to show when --debug is not active (default: 3)
+    --batch_size N     : Batch size per GPU worker (default: 16)
+    --num_gpus N       : Number of GPUs to use (defaults to all detected)
 
 =============================================================================
 """
