@@ -314,6 +314,7 @@ JARGON_SUBSTITUTIONS: Dict[str, List[str]] = {
     "cni": ["C N I"],
     "glibc": ["G lib C", "gee lib see"],
     "rfc": ["RFC"],
+    "rpc": ["R P C"],
     "p99": ["P99", "p 99"],
     "ioc": ["I O C"],
     "cache": ["cash"],
@@ -843,7 +844,9 @@ def apply_acoustic_noise_to_sample(
     favored_mechanisms: Tuple[int, int, int],
     rng: random.Random,
     target_wer: float = 0.20,
-    extra_edits: int = 0
+    extra_edits: int = 0,
+    allow_splits: bool = True,
+    max_changes: Optional[int] = None,
 ) -> str:
     """Transforms refined_text into realistic noisy raw_asr favoring the 3 seeded mechanisms."""
     cleaned_text = clean_markdown_and_dictate(refined_text)
@@ -863,12 +866,21 @@ def apply_acoustic_noise_to_sample(
         word_count = len(words)
         candidates = extract_candidates(sent)
 
+        if not allow_splits:
+            candidates = [
+                c for c in candidates
+                if len(re.findall(r"\b[\w'-]+\b", c.replacement)) <= len(re.findall(r"\b[\w'-]+\b", c.original))
+            ]
+
         if word_count == 0:
             transformed_sentences.append(sent)
             continue
 
-        min_changes = 2 if word_count >= 10 else 1
+        min_changes = 1
         k_target = max(min_changes, round(word_count * target_wer)) + extra_edits
+        if max_changes is not None:
+            k_target = min(k_target, max_changes)
+        k_target = max(1, k_target)
 
         if is_multi_sentence and word_count >= 15:
             k_target = max(2, k_target)
@@ -913,7 +925,8 @@ def apply_acoustic_noise_to_sample(
         transformed_sentences.append(mod_sent)
 
     raw_candidate = " ".join(transformed_sentences)
-    raw_candidate = re.sub(r"[`*_~#]", "", raw_candidate)
+    # Strip markdown formatting while preserving underscores in identifier names
+    raw_candidate = re.sub(r"[`*~#]", "", raw_candidate)
     raw_candidate = re.sub(r"\n+", " ", raw_candidate)
     raw_candidate = re.sub(r"\s+", " ", raw_candidate).strip()
 
@@ -1009,6 +1022,11 @@ UNDER_NOISED_SUBSTITUTIONS = [
     (r"\bwatermark_delay\b", "water mark delay"),
     (r"\bwatermark_lag\b", "water mark lag"),
     (r"\bchecking\b", "check in"),
+    (r"\btank\b", "tanks"),
+    (r"\bscrub\b", "scrubs"),
+    (r"\bmirror\b", "mirrors"),
+    (r"\bacross\b", "a cross"),
+    (r"\bRPC\b", "R P C"),
 ]
 
 
@@ -1017,59 +1035,76 @@ def curate_sample(
     favored_mechanisms: Tuple[int, int, int],
     seed: int
 ) -> Tuple[str, bool, str, Dict[str, float]]:
-    """Generates and validates raw_asr with adaptive refinement loop guaranteeing 100% pass rate."""
-    rng = random.Random(seed)
-
+    """Generates and validates raw_asr with adaptive refinement loop guaranteeing strict 8%-45% WER."""
     strategies = [
-        (0.20, 0),
-        (0.22, 1),
-        (0.24, 0),
-        (0.18, 0),
-        (0.26, 1),
-        (0.28, 2),
-        (0.15, 0),
+        # Normal targets
+        (0.20, 0, True, None),
+        (0.22, 1, True, None),
+        (0.18, 0, True, None),
+        (0.24, 0, True, None),
+        (0.16, 0, True, None),
+        (0.26, 1, True, None),
+        (0.28, 2, True, None),
+        # Lighter strategies if sample is short or WER exceeds 45%
+        (0.15, 0, True, None),
+        (0.15, -1, True, None),
+        (0.18, 0, False, None),
+        (0.15, 0, False, None),
+        (0.20, 0, True, 1),
+        (0.18, 0, True, 1),
+        (0.15, 0, True, 1),
+        (0.15, 0, False, 1),
+        (0.12, 0, False, 1),
+        (0.10, 0, False, 1),
     ]
 
     last_raw = ""
     last_reason = ""
     last_metrics: Dict[str, float] = {}
 
-    for target_wer, extra_edits in strategies:
-        cand_raw = apply_acoustic_noise_to_sample(
-            refined_text, favored_mechanisms, rng, target_wer=target_wer, extra_edits=extra_edits
-        )
-        is_valid, reason, metrics = validate_sample(cand_raw, refined_text)
-        if is_valid:
-            return cand_raw, True, reason, metrics
+    for attempt in range(10):
+        rng = random.Random(seed + attempt * 1000)
+        for target_wer, extra_edits, allow_splits, max_changes in strategies:
+            cand_raw = apply_acoustic_noise_to_sample(
+                refined_text, favored_mechanisms, rng,
+                target_wer=target_wer, extra_edits=extra_edits,
+                allow_splits=allow_splits, max_changes=max_changes
+            )
+            is_valid, reason, metrics = validate_sample(cand_raw, refined_text)
+            wer = metrics.get("wer", 0.0)
 
-        last_raw = cand_raw
-        last_reason = reason
-        last_metrics = metrics
+            # Strict acceptance gate: must be valid AND strictly within 8%-45% WER
+            if is_valid and 0.080 <= wer <= 0.450:
+                return cand_raw, True, reason, metrics
 
-        if "Over-corrupted" in reason:
-            # Revert underscore splitting inside config parameters
-            cand_fixed = re.sub(r"fsdp backward prefetch: BACKWARD PRE", "fsdp_backward_prefetch: BACKWARD_PRE", cand_raw)
-            cand_fixed = re.sub(r"fsdp state dict type: SHARD STATE DICT", "fsdp_state_dict_type: SHARDED_STATE_DICT", cand_fixed)
-            cand_fixed = re.sub(r"accelerate config dot yam el", "accelerate_config.yaml", cand_fixed)
-            cand_fixed = cand_fixed.replace("`", "")
-            ok2, r2, m2 = validate_sample(cand_fixed, refined_text)
-            if ok2:
-                return cand_fixed, True, r2, m2
+            last_raw = cand_raw
+            last_reason = reason
+            last_metrics = metrics
 
-        elif "Long pristine sentence detected" in reason:
-            cur = re.sub(r"\b([a-zA-Z]{5,})s\b", r"\1", cand_raw, count=2)
-            ok2, r2, m2 = validate_sample(cur, refined_text)
-            if ok2:
-                return cur, True, r2, m2
+            if not is_valid and "Over-corrupted" in reason:
+                # Revert underscore splitting inside config parameters
+                cand_fixed = re.sub(r"fsdp backward prefetch: BACKWARD PRE", "fsdp_backward_prefetch: BACKWARD_PRE", cand_raw)
+                cand_fixed = re.sub(r"fsdp state dict type: SHARD STATE DICT", "fsdp_state_dict_type: SHARDED_STATE_DICT", cand_fixed)
+                cand_fixed = re.sub(r"accelerate config dot yam el", "accelerate_config.yaml", cand_fixed)
+                cand_fixed = cand_fixed.replace("`", "")
+                ok2, r2, m2 = validate_sample(cand_fixed, refined_text)
+                if ok2 and 0.080 <= m2.get("wer", 0.0) <= 0.450:
+                    return cand_fixed, True, r2, m2
 
-        elif "Under-noised" in reason:
-            cur = cand_raw
-            for pat, rep in UNDER_NOISED_SUBSTITUTIONS:
-                if re.search(pat, cur, flags=re.IGNORECASE):
-                    cur = re.sub(pat, rep, cur, count=1, flags=re.IGNORECASE)
-                    ok2, r2, m2 = validate_sample(cur, refined_text)
-                    if ok2:
-                        return cur, True, r2, m2
+            elif not is_valid and "Long pristine sentence detected" in reason:
+                cur = re.sub(r"\b([a-zA-Z]{5,})s\b", r"\1", cand_raw, count=2)
+                ok2, r2, m2 = validate_sample(cur, refined_text)
+                if ok2 and 0.080 <= m2.get("wer", 0.0) <= 0.450:
+                    return cur, True, r2, m2
+
+            elif not is_valid and "Under-noised" in reason:
+                cur = cand_raw
+                for pat, rep in UNDER_NOISED_SUBSTITUTIONS:
+                    if re.search(pat, cur, flags=re.IGNORECASE):
+                        cur = re.sub(pat, rep, cur, count=1, flags=re.IGNORECASE)
+                        ok2, r2, m2 = validate_sample(cur, refined_text)
+                        if ok2 and 0.080 <= m2.get("wer", 0.0) <= 0.450:
+                            return cur, True, r2, m2
 
     # Final targeted fix pass
     cur = last_raw
@@ -1077,7 +1112,7 @@ def curate_sample(
         if re.search(pat, cur, flags=re.IGNORECASE):
             cur = re.sub(pat, rep, cur, count=1, flags=re.IGNORECASE)
             ok3, r3, m3 = validate_sample(cur, refined_text)
-            if ok3:
+            if ok3 and 0.080 <= m3.get("wer", 0.0) <= 0.450:
                 return cur, True, r3, m3
 
     return last_raw, False, last_reason, last_metrics
@@ -1198,6 +1233,15 @@ def run_pipeline(
             print(f"MUTATION DETECTED at index {idx}!")
     assert refined_mutations == 0, f"Detected {refined_mutations} mutations in refined_text!"
     print("[OK] Zero mutations to refined_text across all 13,295 samples.")
+
+    # Strict WER invariant check across all samples
+    high_wer_samples = [idx for idx, s in enumerate(patched_dataset) if word_error_rate(s["refined_text"], s["raw_asr"]) > 0.450]
+    assert len(high_wer_samples) == 0, f"Found {len(high_wer_samples)} samples with WER > 45%: {high_wer_samples[:5]}"
+    print("[OK] Exactly 0 samples exceed 45.0% WER limit.")
+
+    low_wer_samples = [idx for idx, s in enumerate(patched_dataset) if word_error_rate(s["refined_text"], s["raw_asr"]) < 0.080]
+    assert len(low_wer_samples) == 0, f"Found {len(low_wer_samples)} samples with WER < 8%: {low_wer_samples[:5]}"
+    print("[OK] Exactly 0 samples have WER < 8.0%.")
 
     # Save patched dataset
     with open(dataset_path, "w", encoding="utf-8") as f:
