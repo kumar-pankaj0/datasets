@@ -1,56 +1,52 @@
-**Antigravity Native Data Generation Workflow**
+**Antigravity Native Data Generation & Curation Workflow**
 
-This guide documents the exact step-by-step process Antigravity uses to generate and validate dataset samples without external APIs, maintaining high diversity across an engineer's real day-to-day life.
+This guide documents the workflow used to curate and validate dataset samples, maintaining high diversity across an engineer's real day-to-day life.
 
 ---
 
 **1. Workflow Philosophy in Natural Flow**
 
-"We do not use external cloud APIs or complex multi-stage script chains. Antigravity acts as the native generator inside this environment.
+We do not use external cloud APIs or brittle regex scripts. Antigravity acts as the native curation agent inside this repository.
 
-Engineers do not spend all day shouting CLI commands into a microphone. In real life, an engineer uses speech-to-text to talk to teammates: dictating a Slack message, updating a Jira ticket, giving a standup update, explaining a bug to a coworker, or discussing trade-offs in an architecture meeting.
+Engineers do not spend all day shouting CLI commands into a microphone. In real life, an engineer uses speech-to-text to collaborate with teammates: dictating a Slack message, updating a Jira ticket, giving a standup update, explaining a bug to a coworker, or discussing trade-offs in an architecture meeting.
 
-When the user requests a batch of samples, Antigravity pulls the invariant rules from `prompt/definition.py`, balances across Short, Medium, and Long utterance lengths, selects from diverse everyday engineering topics, drafts candidates, and passes them immediately through Python validation in `code/validator.py`.
-
-Any sample that fails validation gets rejected instantly. Only 100% verified, zero-invention pairs get appended to `combined_dataset.jsonl`."
+When curating or repairing samples:
+1. The agent follows the master rules in `.agents/skills/asr-data-curator/SKILL.md`.
+2. It balances across Short, Medium, and Long utterance lengths.
+3. It selects from diverse everyday engineering and technical topics.
+4. It passes all pairs immediately through Python validation in `code/gold_dataset_validator.py`.
+5. Only 100% verified pairs are stored in `data/sft_train.json`.
 
 ---
 
 **2. Utterance Length Distribution (Short, Medium, Long)**
 
-To match real spoken communication, every generated batch must balance across three length tiers:
+To match real spoken communication, the dataset balances across three length tiers:
 
-**Tier 1: Short Utterances (< 25 words) — Target: 40% of dataset**
+**Tier 1: Short Utterances (< 25 words) — Target: 30% to 40% of dataset**
 * **Context**: Quick status pings, single terminal commands, short questions, or immediate approvals.
 * **Formatting Invariant**: Exactly 1 grammatically complete sentence. Zero newline characters (`\n`). Zero bullet points or dividers.
 
-**Tier 2: Medium Utterances (25 to 90 words) — Target: 40% of dataset**
+**Tier 2: Medium Utterances (25 to 90 words) — Target: 35% to 45% of dataset**
 * **Context**: Daily standup summaries, PR review comments, error log explanations, or bug reproduction steps.
 * **Formatting Invariant**: 1 to 3 grammatically complete sentences. Natural paragraph breaks (`\n\n`) between distinct thoughts.
 
-**Tier 3: Long Utterances (90+ words) — Target: 20% of dataset**
+**Tier 3: Long Utterances (90+ words) — Target: 20% to 30% of dataset**
 * **Context**: Outage root cause analysis (RCA), complex voice prompting to AI coding assistants, architecture RFC trade-off proposals, or detailed multi-step postmortems.
 * **Formatting Invariant**: Multi-paragraph structure separated by `\n\n`. Numbered or bulleted lists only when describing an explicit sequential checklist.
 
-**Phase 3 Long Catch-Up Mode (Active)**:
-To rapidly eliminate the 1,386 sample Long deficit before reaching the 7,500 target ceiling, generation batches switch to the accelerated catch-up ratio:
-* 2 Short samples (< 25 words / 20%)
-* 3 Medium samples (25–90 words / 30%)
-* 5 Long samples (90+ words / 50%)
-Strict zero-invention and repair-only invariants remain fully enforced on every sample.
-
 ---
 
-**3. Acoustic Noise Simulation Patterns (for `raw_asr`)**
+**3. The 6 Realistic Whisper Acoustic Mechanisms (for `raw_asr`)**
 
-Every candidate must exhibit combinations of authentic acoustic noise patterns:
-* **Phonetic Tool Mishearings**: `cube ctl` for `kubectl`, `a sink` for `async`, `free are toss` for `FreeRTOS`, `post gres` for `PostgreSQL`.
-* **Sound-Alike Homophones**: `buy` for `by`, `four` for `for`, `two` for `to`, `knowed` for `node`, `root` for `route`.
-* **Mid-Sentence Self-Corrections**: *"check the memory usage wait check the socket buffer size instead"*.
-* **Spoken Hex & Digits**: *"zero x one zero"* for `0x10`, *"one hundred thousand"* for `100000`.
-* **Cut-Off Buffer Truncations**: *"configur"*, *"terminat"*, *"allocat"*, *"namesp"*.
-* **Spoken Disfluencies & Fillers**: *"um"*, *"uh"*, *"basically"*, *"you know"*, *"like"*.
-* **Flat Speech Stream**: Continuous lowercase spoken audio without periods, commas, or line breaks.
+Every candidate must exhibit authentic acoustic noise patterns derived from the sentence's own words:
+* **Word Boundary Shifts**: Fast speech merges or splits word edges (`jack it` for `jacket`, `gay token` for `gate open`).
+* **Domain Jargon Substitution**: Technical terms heard as everyday phrases with the same sound skeleton (`stay vector` for `statevector`, `rock DB` for `RocksDB`).
+* **Unstressed Syllable Erosion**: Fast speech clips weak syllables (`play` for `apply`, `seven terry` for `sedentary`).
+* **Spoken Punctuation, Code & Flags**: Oral dictation of symbols and flags without Markdown formatting (`dash detailed exitcode`, `dot pie`).
+* **Clause & Sentence Boundary Drift**: Natural pauses merging or splitting clauses with commas and periods.
+* **Conversational Homophones**: Everyday slips (`do` for `due`, `been` for `bin`, `paved` for `paid`).
+* **Spoken Audio Format**: Natural casing and punctuation (commas, periods, questions). Strictly zero Markdown backticks or bullet markers.
 
 ---
 
@@ -93,7 +89,7 @@ Every candidate must exhibit combinations of authentic acoustic noise patterns:
 * Embedded firmware flashing, serial logs, and hardware register tuning
 
 **Domain 7: Voice Prompting to AI Coding Assistants**
-* Dictating complex refactoring prompts to coding agents (e.g., Cursor, Claude, Antigravity)
+* Dictating complex refactoring prompts to coding agents
 * Providing verbal context, logs, and stack traces to an AI assistant
 * Requesting unit test coverage and mock setups for edge cases
 
@@ -109,42 +105,32 @@ Every candidate must exhibit combinations of authentic acoustic noise patterns:
 
 ---
 
-**5. The 5 Step-by-Step Actions**
+**5. Step-by-Step Workflow**
 
-* **Step 1: Ingest Invariant Rules**
-  * Review the active definition in `prompt/definition.py`.
-  * Enforce the primary constraint: zero parameter invention and zero unprompted purpose clauses.
-  * Pick an active domain and target length tier (Short, Medium, or Long).
+* **Step 1: Check Target & Invariant Rules**
+  * Target candidate pairs from `data/weak_samples_manifest.json` or generate new domain pairs.
+  * `refined_text` is frozen ground truth. Never alter factual content.
 
-* **Step 2: Generate Candidate Pairs**
-  * Draft the requested batch size (e.g., 10 pairs).
-  * `raw_asr`: Flat lowercase spoken text with acoustic errors, spelled numbers, cut words, and pause fillers.
-  * `refined_text`: Cleaned technical documentation and communication preserving exact spoken tokens.
+* **Step 2: Apply the Mumble & Think Protocol**
+  * Read `refined_text` fast mentally.
+  * Identify natural phonetic weak spots.
+  * Rotate across the 6 acoustic noise mechanisms.
+  * Ensure 100% semantic recoverability from context.
 
-* **Step 3: Execute Deterministic Python Validation**
-  * Run `validate_pair()` on each generated sample and `validate_batch()` across the whole batch.
-  * **Flag Grounding Check**: Every CLI flag (`-f`, `--baud`) must exist phonetically in `raw_asr`.
-  * **Code Token Check**: Every backticked register, tool, or identifier must exist phonetically in `raw_asr`.
-  * **Word Length Ratio Check**: Ratio `len(refined_words) / len(raw_words)` must stay within `[0.35, 1.25]`.
-  * **Formatting Invariants Check**:
-    * Short (< 25 words): exactly 0 newlines (`\n`).
-    * Long (90+ words): must contain natural paragraph breaks (`\n\n`).
-    * Divider protection: zero `---` divider spam and zero ungrounded bullet lists.
-  * **Batch Tier Distribution Check**: `validate_batch()` verifies a minimum presence of Short, Medium, and Long samples.
+* **Step 3: Execute Deterministic Validation**
+  * Run `code/gold_dataset_validator.py`.
+  * Verifies Word Error Rate (10% to 35% target).
+  * Verifies character similarity bounds (55% to 98%).
+  * Rejects Markdown backticks or bullet lists in `raw_asr`.
+  * Rejects multi-sentence samples where any 15+ word sentence remains 100% pristine.
 
-* **Step 4: Discard and Regenerate Failures**
-  * Drop any candidate pair that returns `is_valid == False`.
-  * Regenerate replacements until 100% of the requested batch passes all deterministic checks.
-
-* **Step 5: Append to Combined Dataset**
-  * Append verified samples directly to `combined_dataset.jsonl` (when approved by user).
-  * Print verification output and sample diffs for user review.
+* **Step 4: Save Verified Pairs**
+  * Append or patch verified samples in `data/sft_train.json`.
+  * Zero benchmark leakage against `data/sft_eval.json`.
 
 ---
 
-**6. The Simple Rule**
-
-* Balance across lengths: 40% Short, 40% Medium, 20% Long.
-* Commands are only 15% to 20% of an engineer's voice input; 80% is natural collaboration.
-* Never trust raw LLM output without deterministic code validation.
+**6. Core Rules**
+* Commands are only 15% to 20% of an engineer's voice input; 80% is natural technical collaboration.
+* Never trust raw LLM output without deterministic Python validation.
 * Only clean, 100% grounded samples touch the training dataset.
