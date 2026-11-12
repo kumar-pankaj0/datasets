@@ -1,13 +1,11 @@
 **ASR Full Dataset Repair Workflow**
 
 Rewrite `raw_asr` for every sample in `data/sft_train.json` using realistic Whisper acoustic noise.
-`refined_text` stays 100% frozen. Every character stays identical.
+`refined_text` stays 100% frozen. No agent ever outputs or modifies it.
 
 ---
 
 **Strategy: Worker Pool Pattern**
-
-Process all 13,295 samples. Not just weak ones — every single sample gets a fresh `raw_asr`.
 
 ```
 samples = load("data/sft_train.json")       # all 13,295
@@ -15,95 +13,108 @@ batches = chunk(samples, 10)                 # ~1,330 batches
 
 while batches OR active_agents:
     while active_agents < 10 and batches:
-        spawn_agent(prompt, batches.pop())
+        batch = batches.pop()
+        seed = pick_mechanism_bias(batch_id)  # forces variety
+        spawn_agent(prompt, batch, seed)
     finished = wait_for_any()
     collect(finished.output)
 
-save("data/sft_train.json", all_results)
+patch_by_index("data/sft_train.json", all_results)
 audit()
 ```
 
 - **Batch size**: 10 samples per agent.
-- **Max concurrent agents**: 10 (100 samples in flight at once).
+- **Max concurrent agents**: 10.
 - **Rounds to finish**: ~133 rounds.
+
+---
+
+**Input / Output Contract**
+
+Agent receives:
+```json
+[
+  {"index": 4821, "refined_text": "Configure the circuit breaker..."},
+  {"index": 4822, "refined_text": "Mount the local development..."}
+]
+```
+
+Agent outputs **only index + raw_asr**:
+```json
+[
+  {"index": 4821, "raw_asr": "configure the circuit breaker..."},
+  {"index": 4822, "raw_asr": "mount the local develop mint..."}
+]
+```
+
+- Agent reads `refined_text` to understand what to noisify.
+- Agent never outputs `refined_text`. It is not the agent's field.
+- Coordinator patches `sft_train.json` by matching index. `refined_text` never gets touched.
+
+---
+
+**Anti-Bias: Mechanism Rotation Seed**
+
+All agents share the same skill prompt. Without variety, they develop the same noise "style" and the dataset feels uniform.
+
+Each batch gets a rotation seed that tells the agent which 3 of the 6 mechanisms to favor:
+
+- Batch 1: favor mechanisms 1, 3, 5
+- Batch 2: favor mechanisms 2, 4, 6
+- Batch 3: favor mechanisms 1, 2, 6
+- ... rotate through all 20 possible 3-of-6 combinations
+
+The agent still uses all 6 mechanisms. The seed just says "lean heavier on these 3 for this batch."
 
 ---
 
 **What Each Agent Does**
 
-Each spawned agent receives:
-1. The skill instructions from `.agents/skills/asr-data-curator/SKILL.md`
-2. A batch of 10 `{index, raw_asr, refined_text}` samples
-3. These instructions:
-
-For each sample in your batch:
-- Read `refined_text` carefully. This is the frozen ground truth. Copy it exactly as-is.
-- Generate a new `raw_asr` by applying the Mumble & Think protocol and the 6 acoustic mechanisms.
-- Validate the result using `code/gold_dataset_validator.py`.
-- If validation fails, fix and re-validate until it passes.
-- Output a JSON array: `[{"index": N, "raw_asr": "new value", "refined_text": "exact copy"}]`
-- Write output to `scratch/batch_{batch_id}_output.json`
-
----
-
-**The 6 Acoustic Mechanisms (rotate across samples)**
-
-1. **Word Boundary Shifts** — split or merge words at phonetic edges.
-   "jacket" → "jack it", "gate open" → "gay token"
-
-2. **Domain Jargon Substitution** — technical terms misheard as everyday words.
-   "statevector" → "stay vector", "sidechained" → "siech in"
-
-3. **Unstressed Syllable Erosion** — fast speech clips weak syllables.
-   "apply" → "play", "sedentary" → "seven terry"
-
-4. **Spoken Punctuation & Flags** — oral dictation of symbols, no Markdown.
-   "detailed-exitcode" → "detailed exit coat"
-
-5. **Clause & Sentence Boundary Drift** — natural pauses merge or split clauses.
-   Two short sentences merged with a comma, or one long sentence split mid-thought.
-
-6. **Conversational Homophones** — everyday phonetic slips.
-   "due" → "do", "bin" → "been", "paid" → "paved"
+1. Read the skill instructions from `.agents/skills/asr-data-curator/SKILL.md`.
+2. Read the batch of 10 samples (index + refined_text).
+3. Note the mechanism rotation seed for this batch.
+4. For each sample:
+   - Apply the Mumble & Think protocol.
+   - Generate a new `raw_asr` using the 6 acoustic mechanisms, favoring the seeded 3.
+   - Validate with `code/gold_dataset_validator.py`.
+   - If validation fails, fix and re-validate.
+5. Output JSON array: `[{"index": N, "raw_asr": "..."}]`
+6. Write output to `scratch/batch_{batch_id}_output.json`
 
 ---
 
 **Hard Rules (Never Break These)**
 
-- **Never touch `refined_text`**. It is the frozen ground truth.
+- **Never output `refined_text`**. Only output `index` and `raw_asr`.
 - **Never change factual numbers**. Do not swap `16` to `32`.
-- **Never drop whole sentences**. `raw_asr` must cover all content from `refined_text`.
-- **Distribute noise across every sentence**. Long paragraphs must have errors in every sentence.
-- **No Markdown in `raw_asr`**. Zero backticks, zero bullet markers, zero `\n\n` paragraph breaks.
-- **No keyboard typos**. Whisper never outputs `teh` or `configre`. It outputs real words that sound similar.
-- **WER target**: 15%-25% per sample (acceptable range: 8%-45%).
+- **Never drop whole sentences**. `raw_asr` must cover all content.
+- **Distribute noise across every sentence**. Errors in every sentence, not just the first.
+- **No Markdown in `raw_asr`**. Zero backticks, zero bullet markers, zero `\n\n`.
+- **No keyboard typos**. Whisper outputs real words that sound similar, never `teh` or `configre`.
+- **WER target**: 15%-25% per sample (acceptable: 8%-45%).
+
+Do not copy examples from SKILL.md into your output. Use the Mumble & Think protocol to generate unique noise every time.
 
 ---
 
 **Validation Gate**
 
-Every repaired sample must pass `code/gold_dataset_validator.py` before saving.
+Every sample must pass before saving:
 
 ```python
 from gold_dataset_validator import validate_sample
-
 ok, msg, metrics = validate_sample(raw_asr, refined_text)
 ```
 
-Checks:
-- WER between 8% and 45%.
-- Character similarity between 55% and 98%.
-- No Markdown in `raw_asr`.
-- No 15+ word verbatim sentence in multi-sentence samples.
-
+Checks: WER 8%-45%, char similarity 55%-98%, no Markdown, no 15+ word verbatim sentences.
 If a sample fails, fix it and re-validate. Do not skip.
 
 ---
 
 **After All Batches Complete**
 
-1. Collect all batch outputs.
-2. Patch `data/sft_train.json` with new `raw_asr` values.
+1. Collect all `scratch/batch_*_output.json` files.
+2. Patch `data/sft_train.json` by index — replace only `raw_asr`.
 3. Verify total count is still 13,295.
 4. Verify zero `refined_text` mutations.
 5. Run full audit:
@@ -133,7 +144,7 @@ git push origin main
 
 **Reference Files**
 
-- Skill prompt: `.agents/skills/asr-data-curator/SKILL.md`
+- Skill prompt (with examples and mechanisms): `.agents/skills/asr-data-curator/SKILL.md`
 - Validation gate: `code/gold_dataset_validator.py`
 - Audit scanner: `code/audit_weak_samples.py`
 - Training dataset: `data/sft_train.json`
