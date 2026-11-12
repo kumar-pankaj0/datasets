@@ -1,165 +1,140 @@
-**ASR Dataset Repair Workflow**
+**ASR Full Dataset Repair Workflow**
 
-This guide covers the exact steps to repair weak samples in `data/sft_train.json`.
-Repair means upgrading `raw_asr` with realistic Whisper acoustic noise while keeping `refined_text` 100% frozen.
-
----
-
-**When to Use This Workflow**
-- You ran `code/audit_weak_samples.py` and got a manifest of flagged samples.
-- You want to fix under-noised, pristine, or over-corrupted pairs.
-- You want to increase the gold-standard pass rate of the dataset.
+Rewrite `raw_asr` for every sample in `data/sft_train.json` using realistic Whisper acoustic noise.
+`refined_text` stays 100% frozen. Every character stays identical.
 
 ---
 
-**Step 1: Identify Weak Samples**
+**Strategy: Worker Pool Pattern**
 
-Run the audit script to generate a prioritized repair list:
+Process all 13,295 samples. Not just weak ones — every single sample gets a fresh `raw_asr`.
 
-```bash
-cd /data/data/com.termux/files/home/project/fine_tuning/datasets/policy_model_dataset
-python3 code/audit_weak_samples.py data/sft_train.json data/weak_samples_manifest.json
+```
+samples = load("data/sft_train.json")       # all 13,295
+batches = chunk(samples, 10)                 # ~1,330 batches
+
+while batches OR active_agents:
+    while active_agents < 10 and batches:
+        spawn_agent(prompt, batches.pop())
+    finished = wait_for_any()
+    collect(finished.output)
+
+save("data/sft_train.json", all_results)
+audit()
 ```
 
-The manifest file sorts samples by priority:
-- **Under-noised**: `raw_asr` is nearly identical to `refined_text` (WER < 8%).
-- **Long pristine sentences**: Multi-sentence paragraphs where 1 or more sentences have zero noise.
-- **Over-corrupted**: `raw_asr` is so broken that no human can recover the meaning (WER > 60%).
+- **Batch size**: 10 samples per agent.
+- **Max concurrent agents**: 10 (100 samples in flight at once).
+- **Rounds to finish**: ~133 rounds.
 
 ---
 
-**Step 2: Process in Small Batches**
+**What Each Agent Does**
 
-Pick 10 to 15 samples at a time from the manifest.
-Small batches prevent the LLM from getting lazy or repetitive.
+Each spawned agent receives:
+1. The skill instructions from `.agents/skills/asr-data-curator/SKILL.md`
+2. A batch of 10 `{index, raw_asr, refined_text}` samples
+3. These instructions:
 
-For each sample:
-1. Read the `refined_text` carefully.
-2. Read the current `raw_asr` and identify what is wrong (too clean, repetitive errors, or gibberish).
-
----
-
-**Step 3: Apply the Mumble & Think Protocol**
-
-Before editing any sample, think through these 4 steps:
-
-- **Read Aloud Fast**: Mentally speak `refined_text` quickly, as if dictating into a cheap microphone in a noisy room.
-- **Find Natural Weak Spots**: Which words blur together? Which technical terms would Whisper not know? Which unstressed syllables get swallowed?
-- **Diversify Error Types**: Pick a different combination of the 6 acoustic mechanisms than the previous sample.
-- **Recoverability Check**: Can a smart engineer reconstruct the exact `refined_text` from context and phonetics? If not, dial it back.
+For each sample in your batch:
+- Read `refined_text` carefully. This is the frozen ground truth. Copy it exactly as-is.
+- Generate a new `raw_asr` by applying the Mumble & Think protocol and the 6 acoustic mechanisms.
+- Validate the result using `code/gold_dataset_validator.py`.
+- If validation fails, fix and re-validate until it passes.
+- Output a JSON array: `[{"index": N, "raw_asr": "new value", "refined_text": "exact copy"}]`
+- Write output to `scratch/batch_{batch_id}_output.json`
 
 ---
 
-**Step 4: Apply the 6 Acoustic Mechanisms**
+**The 6 Acoustic Mechanisms (rotate across samples)**
 
-Rotate across these mechanisms so no two samples feel alike:
+1. **Word Boundary Shifts** — split or merge words at phonetic edges.
+   "jacket" → "jack it", "gate open" → "gay token"
 
-1. **Word Boundary Shifts**: Split or merge words at phonetic edges.
-   - Example: "jacket" → "jack it", "gate open" → "gay token".
+2. **Domain Jargon Substitution** — technical terms misheard as everyday words.
+   "statevector" → "stay vector", "sidechained" → "siech in"
 
-2. **Domain Jargon Substitution**: Technical terms misheard as everyday words with the same sound skeleton.
-   - Example: "statevector" → "stay vector", "sidechained" → "siech in".
+3. **Unstressed Syllable Erosion** — fast speech clips weak syllables.
+   "apply" → "play", "sedentary" → "seven terry"
 
-3. **Unstressed Syllable Erosion**: Fast speech clips weak syllables.
-   - Example: "apply" → "play", "sedentary" → "seven terry".
+4. **Spoken Punctuation & Flags** — oral dictation of symbols, no Markdown.
+   "detailed-exitcode" → "detailed exit coat"
 
-4. **Spoken Punctuation & Flags**: Oral dictation of symbols without Markdown formatting.
-   - Example: "detailed-exitcode" → "detailed exit coat".
+5. **Clause & Sentence Boundary Drift** — natural pauses merge or split clauses.
+   Two short sentences merged with a comma, or one long sentence split mid-thought.
 
-5. **Clause & Sentence Boundary Drift**: Natural pauses merging or splitting clauses.
-   - Example: Two short sentences merged with a comma, or one long sentence split mid-thought.
-
-6. **Conversational Homophones**: Everyday phonetic slips.
-   - Example: "due" → "do", "bin" → "been", "paid" → "paved".
+6. **Conversational Homophones** — everyday phonetic slips.
+   "due" → "do", "bin" → "been", "paid" → "paved"
 
 ---
 
-**Step 5: Hard Rules (Never Break These)**
+**Hard Rules (Never Break These)**
 
-- **Never touch `refined_text`**: It is the frozen ground truth.
-- **Never change factual numbers**: Do not swap `16` to `32`. Only alter how numbers sound when spoken.
-- **Never drop whole sentences**: `raw_asr` must cover all content from `refined_text`.
-- **Distribute noise across every sentence**: Long paragraphs must have errors in every sentence, not just the first one.
-- **Keep existing good errors**: If a sentence already has creative Whisper noise, leave it alone.
-- **No Markdown in `raw_asr`**: Zero backticks, zero bullet markers, zero `\n\n` paragraph breaks.
-- **No keyboard typos**: Whisper never outputs `teh` or `configre`. It outputs real words that sound similar.
+- **Never touch `refined_text`**. It is the frozen ground truth.
+- **Never change factual numbers**. Do not swap `16` to `32`.
+- **Never drop whole sentences**. `raw_asr` must cover all content from `refined_text`.
+- **Distribute noise across every sentence**. Long paragraphs must have errors in every sentence.
+- **No Markdown in `raw_asr`**. Zero backticks, zero bullet markers, zero `\n\n` paragraph breaks.
+- **No keyboard typos**. Whisper never outputs `teh` or `configre`. It outputs real words that sound similar.
+- **WER target**: 15%-25% per sample (acceptable range: 8%-45%).
 
 ---
 
-**Step 6: Validate Each Batch**
+**Validation Gate**
 
-Run the gold validator on every repaired sample before saving:
+Every repaired sample must pass `code/gold_dataset_validator.py` before saving.
 
 ```python
-import sys
-sys.path.insert(0, "code")
 from gold_dataset_validator import validate_sample
 
-raw = "your repaired raw_asr here"
-ref = "the frozen refined_text here"
-
-ok, msg, metrics = validate_sample(raw, ref)
-print(ok, msg, metrics)
+ok, msg, metrics = validate_sample(raw_asr, refined_text)
 ```
 
-**What the validator checks:**
-- WER between 8% and 45% (rejects pristine and gibberish samples).
+Checks:
+- WER between 8% and 45%.
 - Character similarity between 55% and 98%.
-- No Markdown backticks or bullet lists in `raw_asr`.
-- No 15+ word verbatim sentence copied from `refined_text` in multi-sentence samples.
+- No Markdown in `raw_asr`.
+- No 15+ word verbatim sentence in multi-sentence samples.
+
+If a sample fails, fix it and re-validate. Do not skip.
 
 ---
 
-**Step 7: Save Repaired Samples**
+**After All Batches Complete**
 
-After validation passes, update the pairs directly in `data/sft_train.json`.
-Always verify the total sample count stays at 13,295.
-Always verify that zero `refined_text` values changed.
-
-Quick integrity check after patching:
-
-```bash
-python3 -c "
-import json
-with open('data/sft_train.json') as f:
-    data = json.load(f)
-print('Total samples:', len(data))
-"
-```
-
----
-
-**Step 8: Re-Audit and Commit**
-
-After repairing a batch, re-run the audit to update the manifest:
+1. Collect all batch outputs.
+2. Patch `data/sft_train.json` with new `raw_asr` values.
+3. Verify total count is still 13,295.
+4. Verify zero `refined_text` mutations.
+5. Run full audit:
 
 ```bash
 python3 code/audit_weak_samples.py data/sft_train.json data/weak_samples_manifest.json
 ```
 
-Then commit and push:
+6. Commit and push:
 
 ```bash
-git add data/sft_train.json data/weak_samples_manifest.json
-git commit -m "repair(dataset): upgrade N weak samples with realistic Whisper acoustic noise"
+git add data/sft_train.json
+git commit -m "repair(dataset): full rewrite of raw_asr with realistic Whisper acoustic noise"
 git push origin main
 ```
 
 ---
 
-**Target Quality Metrics**
+**Target Quality**
 
-- **Gold pass rate**: Target 95%+ of all 13,295 samples passing `gold_dataset_validator.py`.
-- **WER range**: 10% to 35% per sample (the sweet spot for training signal).
+- **Gold pass rate**: 95%+ of all 13,295 samples.
+- **WER sweet spot**: 15%-25% per sample.
 - **Zero benchmark leakage**: 0 collisions against `data/sft_eval.json`.
 - **Zero `refined_text` mutations**: Every ground-truth character stays identical.
 
 ---
 
 **Reference Files**
-- Master skill prompt: `.agents/skills/asr-data-curator/SKILL.md`
+
+- Skill prompt: `.agents/skills/asr-data-curator/SKILL.md`
 - Validation gate: `code/gold_dataset_validator.py`
 - Audit scanner: `code/audit_weak_samples.py`
-- Weak sample priority list: `data/weak_samples_manifest.json`
 - Training dataset: `data/sft_train.json`
 - Evaluation benchmark: `data/sft_eval.json`
