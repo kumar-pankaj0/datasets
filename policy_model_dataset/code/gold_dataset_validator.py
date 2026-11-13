@@ -68,12 +68,37 @@ def _is_mechanical_truncation(ref_w: str, raw_w: str) -> bool:
     return False
 
 
+def _is_lazy_orthographic_split(ref_chunk_str: str, raw_chunk_str: str) -> bool:
+    """
+    Catches lazy compound word space-splitting ('database' -> 'data base')
+    and repetitive '-ing' -> ' in' tricks ('switching' -> 'switch in')
+    where the underlying letter sequence barely changed.
+    """
+    ref_clean = ref_chunk_str.replace(" ", "").replace("-", "")
+    raw_clean = raw_chunk_str.replace(" ", "").replace("-", "")
+    if not ref_clean or not raw_clean:
+        return False
+
+    # 1. Pure space insertion/removal ('deadlock' -> 'dead lock', 'microservices' -> 'micro services')
+    if ref_clean == raw_clean:
+        return True
+
+    # 2. Lazy '-ing' -> 'in' or 'e' + 'in' ('monitoring' -> 'monitor in', 'handling' -> 'handle in')
+    if ref_clean.endswith("ing") and raw_clean.endswith("in"):
+        ref_stem = ref_clean[:-3]
+        raw_stem = raw_clean[:-2].rstrip("e")
+        if ref_stem == raw_stem:
+            return True
+
+    return False
+
+
 def analyze_word_edits(
     ref_words: List[str], raw_words: List[str]
 ) -> Dict[str, object]:
     """
     Aligns word tokens using SequenceMatcher to classify the structural nature of edits.
-    Catches 1-to-1 word slicing, mechanical typos, and checks for multi-word boundary shifts.
+    Catches 1-to-1 word slicing, lazy space-splitting, and checks for multi-word boundary shifts.
     """
     ref_lower = [w.lower() for w in ref_words]
     raw_lower = [w.lower() for w in raw_words]
@@ -81,9 +106,11 @@ def analyze_word_edits(
     matcher = difflib.SequenceMatcher(None, ref_lower, raw_lower)
     total_edit_ops = 0
     truncation_count = 0
+    lazy_split_count = 0
     boundary_shift_count = 0  # Splits, merges, insertions, deletions
     edit_pairs: List[Tuple[str, str]] = []
     truncated_examples: List[str] = []
+    lazy_split_examples: List[str] = []
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
@@ -91,36 +118,39 @@ def analyze_word_edits(
 
         ref_chunk = ref_lower[i1:i2]
         raw_chunk = raw_lower[j1:j2]
-        edit_pairs.append((" ".join(ref_chunk), " ".join(raw_chunk)))
+        ref_str = " ".join(ref_chunk)
+        raw_str = " ".join(raw_chunk)
+        edit_pairs.append((ref_str, raw_str))
+        total_edit_ops += 1
 
-        # Multi-word boundary shift (e.g., 1 word split into 2, or 2 words merged into 1, or filler inserted)
+        is_trunc = False
+        for rw, aw in zip(ref_chunk, raw_chunk):
+            if _is_mechanical_truncation(rw, aw):
+                truncation_count += 1
+                truncated_examples.append(f"{rw}->{aw}")
+                is_trunc = True
+
+        if _is_lazy_orthographic_split(ref_str, raw_str):
+            lazy_split_count += 1
+            lazy_split_examples.append(f"{ref_str}->{raw_str}")
+
         if len(ref_chunk) != len(raw_chunk):
             boundary_shift_count += 1
-            total_edit_ops += 1
-            for rw, aw in zip(ref_chunk, raw_chunk):
-                if _is_mechanical_truncation(rw, aw):
-                    truncation_count += 1
-                    truncated_examples.append(f"{rw}->{aw}")
-        else:
-            # 1-to-1 word substitutions
-            for rw, aw in zip(ref_chunk, raw_chunk):
-                if rw == aw:
-                    continue
-                total_edit_ops += 1
-                if _is_mechanical_truncation(rw, aw):
-                    truncation_count += 1
-                    truncated_examples.append(f"{rw}->{aw}")
 
     truncation_ratio = truncation_count / max(1, total_edit_ops)
+    lazy_split_ratio = lazy_split_count / max(1, total_edit_ops)
     boundary_shift_ratio = boundary_shift_count / max(1, total_edit_ops)
 
     return {
         "total_edit_ops": total_edit_ops,
         "truncation_count": truncation_count,
         "truncation_ratio": round(truncation_ratio, 3),
+        "lazy_split_count": lazy_split_count,
+        "lazy_split_ratio": round(lazy_split_ratio, 3),
         "boundary_shift_count": boundary_shift_count,
         "boundary_shift_ratio": round(boundary_shift_ratio, 3),
         "truncated_examples": truncated_examples,
+        "lazy_split_examples": lazy_split_examples,
         "edit_pairs": edit_pairs,
     }
 
@@ -186,12 +216,13 @@ def validate_sample(raw_asr: str, refined_text: str) -> Tuple[bool, str, Dict[st
     if char_sim < 0.55 and wer > 0.60:
         return False, f"Over-corrupted sample: similarity ({char_sim:.1%}) too low, unrecoverable", metrics
 
-    # 6. Anti-Reward-Hacking Gate: Mechanical Word Slicing / Character Deletion
+    # 6. Anti-Reward-Hacking Gate: Mechanical Word Slicing & Lazy Space Splits
     edit_analysis = analyze_word_edits(ref_words, raw_words)
     metrics["truncation_ratio"] = edit_analysis["truncation_ratio"]
+    metrics["lazy_split_ratio"] = edit_analysis["lazy_split_ratio"]
     metrics["boundary_shift_ratio"] = edit_analysis["boundary_shift_ratio"]
 
-    # Reject if >= 2 words are chopped OR > 25% of edits in the sample are mechanical truncations
+    # Reject if mechanical truncations detected
     if edit_analysis["truncation_count"] >= 2 or (
         edit_analysis["total_edit_ops"] >= 3 and edit_analysis["truncation_ratio"] > 0.25
     ):
@@ -199,6 +230,17 @@ def validate_sample(raw_asr: str, refined_text: str) -> Tuple[bool, str, Dict[st
         return (
             False,
             f"Mechanical suffix/character slicing detected ({examples})",
+            metrics,
+        )
+
+    # Reject if lazy space-splits and -ing loops dominate edits (> 50% of edits in sample)
+    if edit_analysis["lazy_split_ratio"] > 0.50 or (
+        edit_analysis["lazy_split_count"] >= 2 and edit_analysis["lazy_split_ratio"] >= 0.33
+    ):
+        examples = ", ".join(edit_analysis["lazy_split_examples"][:3])
+        return (
+            False,
+            f"Lazy orthographic space-splitting or -ing loop detected ({examples}) - requires genuine phonetic spelling changes",
             metrics,
         )
 
@@ -230,6 +272,7 @@ def validate_dataset(filepath: str) -> Dict:
         "char_similarity": 0.0,
         "length_ratio": 0.0,
         "truncation_ratio": 0.0,
+        "lazy_split_ratio": 0.0,
         "boundary_shift_ratio": 0.0,
     }
     all_edit_pairs: Counter = Counter()
@@ -290,6 +333,15 @@ def validate_dataset(filepath: str) -> Dict:
                 batch_warnings.append(msg)
                 hard_script_failure = True
 
+        # Check 3: Is the batch dominated by lazy space-splits instead of true phonetic noise?
+        if avg_metrics.get("lazy_split_ratio", 0.0) > 0.40:
+            msg = (
+                f"HIGH LAZY ORTHOGRAPHIC SPLIT RATIO ({avg_metrics['lazy_split_ratio']:.1%}): "
+                "Edits are dominated by space-insertion ('data base') or '-ing' -> 'in' tricks. Real Whisper noise requires true phonetic homophone/spelling substitutions."
+            )
+            batch_warnings.append(msg)
+            hard_script_failure = True
+
     final_pass_rate = round(valid_count / max(1, total), 3)
     if hard_script_failure:
         final_pass_rate = 0.0
@@ -337,7 +389,6 @@ def process_batch_filtering(
         refined_text = item.get("refined_text", "")
         idx = item.get("index")
 
-        # Fallback to master dataset if refined_text is omitted in worker output
         if not refined_text and master_dataset is not None and isinstance(idx, int) and 0 <= idx < len(master_dataset):
             refined_text = master_dataset[idx].get("refined_text", "")
 
@@ -378,7 +429,6 @@ def process_batch_filtering(
             except Exception:
                 existing_failed = []
 
-        # Merge new failures avoiding duplicate index entries
         existing_indices = {x.get("index") for x in existing_failed if "index" in x}
         for item in failed_items:
             if item.get("index") not in existing_indices:
