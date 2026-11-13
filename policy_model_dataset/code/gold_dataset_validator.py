@@ -103,7 +103,7 @@ def analyze_word_edits(
     ref_lower = [w.lower() for w in ref_words]
     raw_lower = [w.lower() for w in raw_words]
 
-    matcher = difflib.SequenceMatcher(None, ref_lower, raw_lower)
+    matcher = difflib.SequenceMatcher(None, ref_lower, raw_lower, autojunk=False)
     total_edit_ops = 0
     truncation_count = 0
     lazy_split_count = 0
@@ -201,7 +201,7 @@ def validate_sample(raw_asr: str, refined_text: str) -> Tuple[bool, str, Dict[st
 
     norm_ref = normalize_for_comparison(refined_text)
     norm_raw = normalize_for_comparison(raw_asr)
-    char_sim = difflib.SequenceMatcher(None, norm_ref, norm_raw).ratio()
+    char_sim = difflib.SequenceMatcher(None, norm_ref, norm_raw, autojunk=False).ratio()
     metrics["char_similarity"] = round(char_sim, 3)
 
     # 4. Check for under-noised / pristine samples
