@@ -204,16 +204,16 @@ def validate_sample(raw_asr: str, refined_text: str) -> Tuple[bool, str, Dict[st
     char_sim = difflib.SequenceMatcher(None, norm_ref, norm_raw, autojunk=False).ratio()
     metrics["char_similarity"] = round(char_sim, 3)
 
-    # 4. Check for under-noised / pristine samples
+    # 4. Check for under-noised / pristine samples (Target WER: 25%-40%, Similarity <= 92%)
     if len(ref_words) < 10:
-        if char_sim > 0.985 or wer == 0.0:
-            return False, f"Under-noised sample (WER={wer:.1%}, similarity={char_sim:.1%})", metrics
+        if wer < 0.15 or char_sim > 0.940:
+            return False, f"Under-noised sample: WER ({wer:.1%}) below 15% or similarity ({char_sim:.1%}) above 94%", metrics
     else:
-        if wer < 0.08 or char_sim > 0.980:
-            return False, f"Under-noised sample: WER ({wer:.1%}) below 8% or similarity ({char_sim:.1%}) above 98%", metrics
+        if wer < 0.20 or char_sim > 0.920:
+            return False, f"Under-noised sample: WER ({wer:.1%}) below 20% or similarity ({char_sim:.1%}) above 92%", metrics
 
     # 5. Check for over-corrupted / ungrounded gibberish
-    if char_sim < 0.55 and wer > 0.60:
+    if char_sim < 0.50 and wer > 0.65:
         return False, f"Over-corrupted sample: similarity ({char_sim:.1%}) too low, unrecoverable", metrics
 
     # 6. Anti-Reward-Hacking Gate: Mechanical Word Slicing & Lazy Space Splits
@@ -244,12 +244,27 @@ def validate_sample(raw_asr: str, refined_text: str) -> Tuple[bool, str, Dict[st
             metrics,
         )
 
-    # 7. Multi-sentence noise distribution check
+    # 7. Multi-sentence noise distribution & per-sentence density check (Minimum 18%-20% per sentence)
     sentences = [s.strip() for s in re.split(r"[.!?]+", refined_text) if len(s.strip().split()) >= 4]
-    if len(sentences) >= 3:
+    if len(sentences) >= 2:
+        matcher = difflib.SequenceMatcher(None, [w.lower() for w in ref_words], [w.lower() for w in raw_words], autojunk=False)
+        matching_blocks = matcher.get_matching_blocks()
+        curr_word_idx = 0
         for sent in sentences:
-            if len(sent.split()) >= 15 and sent.lower() in raw_asr.lower():
-                return False, f"Long pristine sentence detected inside multi-sentence sample: '{sent[:40]}...'", metrics
+            s_words = re.findall(r"\b[\w'-]+\b", sent.lower())
+            s_len = len(s_words)
+            start = curr_word_idx
+            end = curr_word_idx + s_len
+            curr_word_idx = end
+
+            if s_len >= 6 and sent.lower() in raw_asr.lower():
+                return False, f"Pristine uncorrupted sentence detected: '{sent[:40]}...'", metrics
+
+            if s_len >= 8:
+                unchanged = sum(max(0, min(end, i + n) - max(start, i)) for i, j, n in matching_blocks)
+                mod_ratio = (s_len - unchanged) / s_len
+                if mod_ratio < 0.18:
+                    return False, f"Under-noised sentence ({mod_ratio:.1%} modified < 18% min): '{sent[:40]}...'", metrics
 
     return True, "Valid gold sample", metrics
 
